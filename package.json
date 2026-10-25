@@ -1,0 +1,91 @@
+{
+  "name": "lote-control-unificado",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Aplicação desktop única para Protege, Pix e Relatório",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.cjs",
+    "start": "npm run build && electron .",
+    "build": "npm run build:ui && npm run build:electron",
+    "build:ui": "tsc -p tsconfig.json && vite build",
+    "build:electron": "node scripts/build-electron.cjs",
+    "test": "vitest run",
+    "test:smoke": "npm run build && node scripts/smoke.cjs",
+    "icon": "node scripts/generate-icon.cjs",
+    "pack": "npm run icon && npm run build && electron-builder --dir",
+    "dist": "npm run icon && npm run build && electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.lotecontrol.app",
+    "productName": "LoteControl",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/main.cjs",
+      "dist-electron/preload.cjs",
+      "electron/database.cjs",
+      "electron/drive-sync.cjs",
+      "assets/icon-app.png",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "node_modules/sql.js/dist/sql-wasm.wasm",
+        "to": "sql-wasm.wasm"
+      }
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/sql.js/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "LoteControl",
+      "uninstallDisplayName": "LoteControl"
+    }
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "lucide-react": "^1.61.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "sql.js": "^1.15.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/sql.js": "^1.4.11",
+    "@vitejs/plugin-react": "^6.1.2",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "jsdom": "^30.1.3",
+    "png-to-ico": "^3.0.2",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  }
+}
