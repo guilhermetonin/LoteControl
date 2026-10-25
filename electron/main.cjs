@@ -850,8 +850,10 @@ function registerReportHandlers() {
   ipcMain.handle('report:add-lancamento', (_event, entry) => reportMutation(entry?.id, () => db().addLancamento(entry)));
   ipcMain.handle('report:update-lancamento', (_event, id, updates) => reportMutation(id, () => db().updateLancamento(String(id), updates)));
   ipcMain.handle('report:toggle-status', (_event, id, status, notes) => reportMutation(id, () => db().toggleStatus(String(id), String(status), String(notes || ''))));
+  ipcMain.handle('report:toggle-status-batch', (_event, items, status) => reportMutation('batch-status', () => db().toggleStatusBatch(items, status)));
   ipcMain.handle('report:update-observacoes', (_event, id, notes, status) => reportMutation(id, () => db().updateObservacoes(String(id), String(notes), status)));
   ipcMain.handle('report:delete-lancamento', (_event, id) => reportMutation(id, () => db().deleteLancamento(String(id))));
+  ipcMain.handle('report:delete-lancamento-batch', (_event, ids) => reportMutation('batch-delete', () => db().deleteLancamentoBatch(ids)));
   ipcMain.handle('report:get-funcionarios', (_event, loterica) => db().getDistinctFuncionarios(String(loterica)));
   ipcMain.handle('report:rename-funcionario', (_event, loterica, oldName, newName) => reportMutation('funcionarios', () => db().renameFuncionario(String(loterica), String(oldName), String(newName))));
   ipcMain.handle('report:get-official-base-info', () => db().getOfficialBaseInfo());

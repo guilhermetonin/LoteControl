@@ -45,9 +45,11 @@ class PixDatabase {
     this.initTables();
     // 2. Executa migrações estruturais para bancos legados
     this.runMigrations();
-    // 3. Garante que os índices sejam criados (inclusive os dependentes de colunas migradas)
+    // 3. Executa deduplicação do histórico de versões se necessário
+    this.deduplicateVersionHistory();
+    // 4. Garante que os índices sejam criados (inclusive os dependentes de colunas migradas)
     this.initIndexes();
-    // 4. Salva no disco
+    // 5. Salva no disco
     this.saveToDisk();
   }
 
@@ -229,6 +231,53 @@ class PixDatabase {
     }
   }
 
+  deduplicateVersionHistory() {
+    try {
+      const tableCheck = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sync_versions_history'");
+      const exists = tableCheck.step();
+      tableCheck.free();
+      if (!exists) return { removed: 0 };
+
+      const dupStmt = this.db.prepare(`
+        SELECT COUNT(*) - COUNT(DISTINCT version_id) AS dup_count
+        FROM sync_versions_history
+        WHERE version_id IS NOT NULL AND version_id != ''
+      `);
+      let dupCount = 0;
+      if (dupStmt.step()) {
+        dupCount = Number(dupStmt.getAsObject().dup_count || 0);
+      }
+      dupStmt.free();
+
+      if (dupCount <= 0) {
+        return { removed: 0 };
+      }
+
+      console.log(`[Database] Identificadas ${dupCount} versões duplicadas em sync_versions_history. Iniciando deduplicação canônica...`);
+
+      // Mantém o registro canônico mais antigo (menor rowid) para cada version_id
+      this.db.run(`
+        DELETE FROM sync_versions_history
+        WHERE rowid NOT IN (
+          SELECT MIN(rowid)
+          FROM sync_versions_history
+          WHERE version_id IS NOT NULL AND version_id != ''
+          GROUP BY version_id
+        )
+      `);
+
+      // Executa VACUUM para liberar o espaço ocupado por snapshots redundantes
+      this.db.run('VACUUM;');
+      this.saveToDisk();
+
+      console.log(`[Database] Deduplicação concluída com sucesso. ${dupCount} registros redundantes removidos.`);
+      return { removed: dupCount };
+    } catch (err) {
+      console.error('[Database] Erro durante a deduplicação de sync_versions_history:', err);
+      return { error: err.message };
+    }
+  }
+
   initIndexes() {
     // Cria índices somente após garantir que todas as colunas existem
     try {
@@ -238,6 +287,7 @@ class PixDatabase {
         CREATE INDEX IF NOT EXISTS idx_pix_status ON pix_lancamentos (status);
         CREATE INDEX IF NOT EXISTS idx_pix_deleted ON pix_lancamentos (deleted);
         CREATE INDEX IF NOT EXISTS idx_versions_history ON sync_versions_history (file_key, version_num);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_versions_version_id ON sync_versions_history (version_id);
       `);
     } catch (err) {
       console.error('[Database] Erro ao criar índices:', err);
@@ -653,7 +703,7 @@ class PixDatabase {
       this.enqueueSync(isDeleted ? 'DELETE' : 'UPDATE', id, result);
     }
 
-    this.saveToDisk();
+    if (!options.deferPersist) this.saveToDisk();
     return result;
   }
 
@@ -695,7 +745,7 @@ class PixDatabase {
       this.enqueueSync('UPDATE', id, result);
     }
 
-    this.saveToDisk();
+    if (!options.deferPersist) this.saveToDisk();
     return result;
   }
 
@@ -736,7 +786,7 @@ class PixDatabase {
       this.enqueueSync('UPDATE', id, result);
     }
 
-    this.saveToDisk();
+    if (!options.deferPersist) this.saveToDisk();
     return result;
   }
 
@@ -768,7 +818,7 @@ class PixDatabase {
       this.enqueueSync('DELETE', id, { ...existing, deleted: 1, version: newVersion, atualizado_em: now });
     }
 
-    this.saveToDisk();
+    if (!options.deferPersist) this.saveToDisk();
     return true;
   }
 
@@ -828,8 +878,32 @@ class PixDatabase {
     return list;
   }
 
-  saveVersionHistory(rec) {
-    const id = rec.id || `vh_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+  saveVersionHistory(rec, options = {}) {
+    if (!rec || !rec.version_id) {
+      throw new Error('saveVersionHistory: version_id é obrigatório.');
+    }
+
+    // 1. Verifica se já existe um registro para este version_id
+    let existingId = null;
+    let existingSnapshot = null;
+    const checkStmt = this.db.prepare("SELECT id, snapshot_json FROM sync_versions_history WHERE version_id = :version_id LIMIT 1");
+    checkStmt.bind({ ':version_id': rec.version_id });
+    if (checkStmt.step()) {
+      const row = checkStmt.getAsObject();
+      existingId = row.id;
+      existingSnapshot = row.snapshot_json;
+    }
+    checkStmt.free();
+
+    const snapshotStr = typeof rec.snapshot === 'string' ? rec.snapshot : JSON.stringify(rec.snapshot || {});
+    const changesStr = typeof rec.changes === 'string' ? rec.changes : JSON.stringify(rec.changes || []);
+
+    // Idempotência estrita: se a versão já está gravada com snapshot idêntico, evita reescrita desnecessária em disco
+    if (existingId && existingSnapshot === snapshotStr && !options.force) {
+      return existingId;
+    }
+
+    const id = rec.id || existingId || `vh_${rec.version_id}`;
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO sync_versions_history (
         id, file_key, loterica, ano, mes, version_num, version_id,
@@ -855,11 +929,14 @@ class PixDatabase {
       ':device_name': rec.device_name || '',
       ':user_email': rec.user_email || '',
       ':summary': rec.summary || '',
-      ':changes_json': typeof rec.changes === 'string' ? rec.changes : JSON.stringify(rec.changes || []),
-      ':snapshot_json': typeof rec.snapshot === 'string' ? rec.snapshot : JSON.stringify(rec.snapshot || {})
+      ':changes_json': changesStr,
+      ':snapshot_json': snapshotStr
     });
     stmt.free();
-    this.saveToDisk();
+
+    if (!options.deferPersist) {
+      this.saveToDisk();
+    }
     return id;
   }
 
@@ -923,22 +1000,127 @@ class PixDatabase {
     const nMes = Number(mes);
     const entries = Array.isArray(entriesMap) ? entriesMap : Object.values(entriesMap || {});
 
-    for (const entry of entries) {
-      const existing = this.getLancamentoById(entry.id);
-      const entryData = {
-        ...entry,
-        loterica: normLoterica,
-        ano: nAno,
-        mes: nMes
-      };
-      if (!existing) {
-        this.addLancamento(entryData, { fromSync: options.fromSync !== false });
-      } else {
-        this.updateLancamento(entry.id, entryData, { fromSync: options.fromSync !== false });
+    const before = Buffer.from(this.db.export());
+    let transactionOpen = false;
+
+    try {
+      this.db.run('BEGIN TRANSACTION;');
+      transactionOpen = true;
+
+      for (const entry of entries) {
+        const existing = this.getLancamentoById(entry.id);
+        const entryData = {
+          ...entry,
+          loterica: normLoterica,
+          ano: nAno,
+          mes: nMes
+        };
+        if (!existing) {
+          this.addLancamento(entryData, { fromSync: options.fromSync !== false, deferPersist: true });
+        } else {
+          this.updateLancamento(entry.id, entryData, { fromSync: options.fromSync !== false, deferPersist: true });
+        }
       }
+
+      this.db.run('COMMIT;');
+      transactionOpen = false;
+
+      if (!options.deferPersist) {
+        this.saveToDisk();
+      }
+      return true;
+    } catch (err) {
+      if (transactionOpen) {
+        try { this.db.run('ROLLBACK;'); } catch {}
+      }
+      try {
+        this.db.close();
+        this.db = new this.SQL.Database(before);
+      } catch (restoreErr) {
+        console.error('[Database] Erro ao restaurar memória após falha no applySnapshot:', restoreErr);
+      }
+      throw err;
     }
-    this.saveToDisk();
-    return true;
+  }
+
+  toggleStatusBatch(items, newStatus, options = {}) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return { updated: 0, items: [] };
+    }
+
+    const before = Buffer.from(this.db.export());
+    let transactionOpen = false;
+    const updatedResults = [];
+
+    try {
+      this.db.run('BEGIN TRANSACTION;');
+      transactionOpen = true;
+
+      for (const item of items) {
+        const itemId = typeof item === 'string' ? item : item.id;
+        const itemObs = typeof item === 'object' && item.observacoes !== undefined ? item.observacoes : undefined;
+        const res = this.toggleStatus(itemId, newStatus, itemObs, { ...options, deferPersist: true });
+        if (res) updatedResults.push(res);
+      }
+
+      this.db.run('COMMIT;');
+      transactionOpen = false;
+
+      if (!options.deferPersist) {
+        this.saveToDisk();
+      }
+      return { updated: updatedResults.length, items: updatedResults };
+    } catch (err) {
+      if (transactionOpen) {
+        try { this.db.run('ROLLBACK;'); } catch {}
+      }
+      try {
+        this.db.close();
+        this.db = new this.SQL.Database(before);
+      } catch (restoreErr) {
+        console.error('[Database] Erro ao restaurar memória após falha no toggleStatusBatch:', restoreErr);
+      }
+      throw err;
+    }
+  }
+
+  deleteLancamentoBatch(ids, options = {}) {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return { deleted: 0 };
+    }
+
+    const before = Buffer.from(this.db.export());
+    let transactionOpen = false;
+    let deletedCount = 0;
+
+    try {
+      this.db.run('BEGIN TRANSACTION;');
+      transactionOpen = true;
+
+      for (const id of ids) {
+        const ok = this.deleteLancamento(id, { ...options, deferPersist: true });
+        if (ok) deletedCount++;
+      }
+
+      this.db.run('COMMIT;');
+      transactionOpen = false;
+
+      if (!options.deferPersist) {
+        this.saveToDisk();
+      }
+      return { deleted: deletedCount };
+    } catch (err) {
+      if (transactionOpen) {
+        try { this.db.run('ROLLBACK;'); } catch {}
+      }
+      try {
+        this.db.close();
+        this.db = new this.SQL.Database(before);
+      } catch (restoreErr) {
+        console.error('[Database] Erro ao restaurar memória após falha no deleteLancamentoBatch:', restoreErr);
+      }
+      throw err;
+    }
   }
 
   getDistinctFuncionarios(loterica) {

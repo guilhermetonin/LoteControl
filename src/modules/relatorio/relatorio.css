@@ -269,7 +269,8 @@
   width: 100%;
   min-width: 0;
   table-layout: fixed;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 13px;
   background: #ffffff;
 }

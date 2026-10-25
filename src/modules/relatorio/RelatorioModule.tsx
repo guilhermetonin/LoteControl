@@ -293,8 +293,12 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
     if (pendingItems.length === 0) return;
     const count = pendingItems.length;
     await action(async () => {
-      for (const item of pendingItems) {
-        await api.toggleStatus(item.id, 'conferido', item.observacoes || '');
+      if (typeof api.toggleStatusBatch === 'function') {
+        await api.toggleStatusBatch(pendingItems, 'conferido');
+      } else {
+        for (const item of pendingItems) {
+          await api.toggleStatus(item.id, 'conferido', item.observacoes || '');
+        }
       }
     }, count === 1 ? 'Lançamento marcado como conferido.' : `${count} lançamentos marcados como conferidos.`);
   }, [api, action]);
@@ -304,8 +308,12 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
     if (!api || items.length === 0) return;
     const count = items.length;
     await action(async () => {
-      for (const item of items) {
-        await api.deleteLancamento(item.id);
+      if (typeof api.deleteLancamentoBatch === 'function') {
+        await api.deleteLancamentoBatch(items.map((it: any) => it.id));
+      } else {
+        for (const item of items) {
+          await api.deleteLancamento(item.id);
+        }
       }
     }, count === 1 ? 'Lançamento removido.' : `${count} lançamentos removidos.`);
   }, [api, action]);
@@ -1149,6 +1157,156 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
   );
 }
 
+interface DayGroupRowProps {
+  day: number;
+  subtotal: number;
+}
+
+export const DayGroupRow = React.memo(function DayGroupRow({ day, subtotal }: DayGroupRowProps) {
+  return (
+    <tr className="rp-day-group">
+      <td colSpan={4}>
+        <div>
+          <span>🗓️ DIA {String(day).padStart(2, '0')}</span>
+          <small>SUBTOTAL: <strong>{brl.format(subtotal)}</strong></small>
+        </div>
+      </td>
+    </tr>
+  );
+});
+
+export const DayHeadRow = React.memo(function DayHeadRow() {
+  return (
+    <tr className="rp-group-head">
+      <th>VALOR</th>
+      <th>DESCRIÇÃO</th>
+      <th>FUNCIONÁRIO</th>
+      <th aria-label="Conferência"></th>
+    </tr>
+  );
+});
+
+interface LedgerRowProps {
+  row: any;
+  kind: string;
+  isChecked: boolean;
+  isSelected: boolean;
+  isEditing: boolean;
+  editingField?: 'valor' | 'cliente' | 'funcionario';
+  cellDraft: string;
+  onSetCellDraft: (val: string) => void;
+  onBeginInlineEdit: (row: any, field: 'valor' | 'cliente' | 'funcionario') => void;
+  onCancelInlineEdit: () => void;
+  onCommitInlineEdit: (row: any, field: 'valor' | 'cliente' | 'funcionario', nextCell?: any) => void;
+  onContextMenu: (event: React.MouseEvent, row: any) => void;
+  onRowClick: (event: React.MouseEvent, id: string) => void;
+  onToggleStatus?: (row: any) => void;
+}
+
+export const LedgerRow = React.memo(function LedgerRow({
+  row,
+  kind,
+  isChecked,
+  isSelected,
+  isEditing,
+  editingField,
+  cellDraft,
+  onSetCellDraft,
+  onBeginInlineEdit,
+  onCancelInlineEdit,
+  onCommitInlineEdit,
+  onContextMenu,
+  onRowClick,
+  onToggleStatus,
+}: LedgerRowProps) {
+  function renderCell(field: 'valor' | 'cliente' | 'funcionario', label: string, content: React.ReactNode) {
+    const editing = isEditing && editingField === field;
+    const title = `Clique para editar ${label}`;
+    return (
+      <td
+        className={`${field === 'valor' ? 'rp-money-cell' : ''} ${field === 'cliente' ? 'rp-description-cell' : ''} ${field === 'funcionario' ? 'rp-employee-cell' : ''} rp-cell-editable ${editing ? 'rp-cell-editing' : ''}`}
+        data-inline-id={row.id}
+        data-inline-field={field}
+        title={title}
+        role="button"
+        tabIndex={0}
+        aria-label={`${label}: ${field === 'valor' ? brl.format(row.valor) : row[field] || 'vazio'}. ${title}`}
+        onClick={() => { if (!editing) onBeginInlineEdit(row, field); }}
+        onKeyDown={(event) => { if (!editing && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onBeginInlineEdit(row, field); } }}
+      >
+        {editing ? (
+          <input
+            autoFocus
+            className={`rp-inline-input ${field === 'valor' ? 'short' : ''}`}
+            aria-label={label}
+            inputMode={field === 'valor' ? 'decimal' : undefined}
+            value={cellDraft}
+            onChange={(event) => onSetCellDraft(event.target.value)}
+            onClick={(event) => event.stopPropagation()}
+            onFocus={(event) => event.currentTarget.select()}
+            onBlur={() => void onCommitInlineEdit(row, field)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') { event.preventDefault(); onCancelInlineEdit(); return; }
+              if (event.key === 'Enter') { event.preventDefault(); void onCommitInlineEdit(row, field); return; }
+              if (event.key === 'Tab') {
+                event.preventDefault();
+                const allCells = Array.from(document.querySelectorAll<HTMLElement>(`.rp-ledger.${kind} td[data-inline-id]`));
+                const index = allCells.findIndex((cell) => cell.dataset.inlineId === row.id && cell.dataset.inlineField === field);
+                const direction = event.shiftKey ? -1 : 1;
+                const target = allCells[index + direction];
+                const nextCell = target?.dataset.inlineId && target.dataset.inlineField
+                  ? { id: target.dataset.inlineId, field: target.dataset.inlineField as 'valor' | 'cliente' | 'funcionario' }
+                  : undefined;
+                void onCommitInlineEdit(row, field, nextCell);
+              }
+            }}
+          />
+        ) : (
+          content
+        )}
+      </td>
+    );
+  }
+
+  return (
+    <tr
+      id={`report-row-${row.id}`}
+      className={`${isChecked ? 'is-conferido' : ''} ${isSelected ? 'is-selected' : ''}`.trim() || undefined}
+      onContextMenu={(event) => onContextMenu(event, row)}
+      title="Clique com o botão direito para ver as ações"
+    >
+      {renderCell('valor', 'Valor', brl.format(row.valor))}
+      {renderCell('cliente', 'Descrição', row.cliente || '—')}
+      {renderCell('funcionario', 'Funcionário', row.funcionario || '—')}
+      <td
+        className={`rp-check-cell ${isSelected ? 'is-selected' : ''}`}
+        onClick={(e) => {
+          if ((e.target as HTMLElement).tagName.toLowerCase() !== 'input') {
+            e.preventDefault();
+            onRowClick(e, row.id);
+          }
+        }}
+        title="Clique fora da caixa para selecionar com Ctrl / Shift"
+      >
+        <div
+          className="rp-check-action"
+          title={isChecked ? 'Desmarcar conferência' : 'Marcar como conferido'}
+        >
+          <input
+            type="checkbox"
+            checked={isChecked}
+            onClick={(e) => {
+              e.stopPropagation();
+            }}
+            onChange={() => void onToggleStatus?.(row)}
+            aria-label={isChecked ? 'Reabrir lançamento' : 'Marcar como conferido'}
+          />
+        </div>
+      </td>
+    </tr>
+  );
+});
+
 export const Ledger = React.memo(function Ledger({ title, kind, entries, onEdit, onInlineSave, onToggleStatus, onMarkAsConferido, onDelete, isActive = true }: any) {
   const [editingCell, setEditingCell] = useState<{ id: string; field: 'valor' | 'cliente' | 'funcionario' } | null>(null);
   const [cellDraft, setCellDraft] = useState('');
@@ -1271,29 +1429,29 @@ export const Ledger = React.memo(function Ledger({ title, kind, entries, onEdit,
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isActive, selectedIds.size, clearSelection]);
 
-  function beginInlineEdit(row: any, field: 'valor' | 'cliente' | 'funcionario' = 'cliente') {
+  const beginInlineEdit = useCallback((row: any, field: 'valor' | 'cliente' | 'funcionario' = 'cliente') => {
     savingCell.current = false;
     const nextCell = { id: row.id, field };
     activeCell.current = nextCell;
     setEditingCell(nextCell);
     setCellDraft(field === 'valor' ? valueDraft(row.valor) : String(row[field] || ''));
-  }
+  }, []);
 
-  function cancelInlineEdit() {
+  const cancelInlineEdit = useCallback(() => {
     savingCell.current = false;
     activeCell.current = null;
     setEditingCell(null);
     setCellDraft('');
-  }
+  }, []);
 
-  function finishInlineEdit(id: string, field: 'valor' | 'cliente' | 'funcionario') {
+  const finishInlineEdit = useCallback((id: string, field: 'valor' | 'cliente' | 'funcionario') => {
     if (activeCell.current?.id !== id || activeCell.current.field !== field) return;
     activeCell.current = null;
     setEditingCell(null);
     setCellDraft('');
-  }
+  }, []);
 
-  async function commitInlineEdit(row: any, field: 'valor' | 'cliente' | 'funcionario', nextCell?: { id: string; field: 'valor' | 'cliente' | 'funcionario' }) {
+  const commitInlineEdit = useCallback(async (row: any, field: 'valor' | 'cliente' | 'funcionario', nextCell?: { id: string; field: 'valor' | 'cliente' | 'funcionario' }) => {
     if (!editingCell || !onInlineSave || savingCell.current) return;
     const values = {
       dia: String(row.dia),
@@ -1316,48 +1474,23 @@ export const Ledger = React.memo(function Ledger({ title, kind, entries, onEdit,
         cells.find((cell) => cell.dataset.inlineId === nextCell.id && cell.dataset.inlineField === nextCell.field)?.click();
       }, 0);
     }
-  }
+  }, [editingCell, onInlineSave, cellDraft, finishInlineEdit, kind]);
 
-  function renderEditableCell(row: any, field: 'valor' | 'cliente' | 'funcionario', label: string, content: React.ReactNode) {
-    const editing = editingCell?.id === row.id && editingCell?.field === field;
-    const title = `Clique para editar ${label}`;
-    return <td
-      className={`${field === 'valor' ? 'rp-money-cell' : ''} ${field === 'cliente' ? 'rp-description-cell' : ''} ${field === 'funcionario' ? 'rp-employee-cell' : ''} rp-cell-editable ${editing ? 'rp-cell-editing' : ''}`}
-      data-inline-id={row.id}
-      data-inline-field={field}
-      title={title}
-      role="button"
-      tabIndex={0}
-      aria-label={`${label}: ${field === 'valor' ? brl.format(row.valor) : row[field] || 'vazio'}. ${title}`}
-      onClick={() => { if (!editing) beginInlineEdit(row, field); }}
-      onKeyDown={(event) => { if (!editing && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); beginInlineEdit(row, field); } }}
-    >{editing ? <input
-      autoFocus
-      className={`rp-inline-input ${field === 'valor' ? 'short' : ''}`}
-      aria-label={label}
-      inputMode={field === 'valor' ? 'decimal' : undefined}
-      value={cellDraft}
-      onChange={(event) => setCellDraft(event.target.value)}
-      onClick={(event) => event.stopPropagation()}
-      onFocus={(event) => event.currentTarget.select()}
-      onBlur={() => void commitInlineEdit(row, field)}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') { event.preventDefault(); cancelInlineEdit(); return; }
-        if (event.key === 'Enter') { event.preventDefault(); void commitInlineEdit(row, field); return; }
-        if (event.key === 'Tab') {
-          event.preventDefault();
-          const allCells = Array.from(document.querySelectorAll<HTMLElement>(`.rp-ledger.${kind} td[data-inline-id]`));
-          const index = allCells.findIndex((cell) => cell.dataset.inlineId === row.id && cell.dataset.inlineField === field);
-          const direction = event.shiftKey ? -1 : 1;
-          const target = allCells[index + direction];
-          const nextCell = target?.dataset.inlineId && target.dataset.inlineField
-            ? { id: target.dataset.inlineId, field: target.dataset.inlineField as 'valor' | 'cliente' | 'funcionario' }
-            : undefined;
-          void commitInlineEdit(row, field, nextCell);
-        }
-      }}
-    /> : content}</td>;
-  }
+  const handleContextMenu = useCallback((event: React.MouseEvent, row: any) => {
+    event.preventDefault();
+    const isSel = selectedIds.has(String(row.id));
+    const isMulti = isSel && selectedIds.size > 1;
+    const targetRows = isMulti
+      ? displayedRows.filter((r: any) => selectedIds.has(String(r.id)))
+      : [row];
+    setContextMenu({
+      row,
+      isMulti,
+      targetRows,
+      x: Math.min(event.clientX, window.innerWidth - 210),
+      y: Math.min(event.clientY, window.innerHeight - 190),
+    });
+  }, [selectedIds, displayedRows]);
 
   return <section className={`rp-ledger ${kind}`}>
     <header><div className="rp-ledger-heading"><div><span className="rp-ledger-mark" /><h2>{title}</h2></div><p>{kind === 'falta' ? 'Diferenças não localizadas no caixa / pendências' : 'Valores a mais recebidos no PIX / sem comprovante'}</p></div><div className="rp-ledger-total"><span>{kind === 'falta' ? 'Total faltando' : 'Total sobrando'}</span><strong>{brl.format(totalSum)}</strong></div></header>
@@ -1382,80 +1515,42 @@ export const Ledger = React.memo(function Ledger({ title, kind, entries, onEdit,
           {visibleItems.map((item) => {
             if (item.type === 'day-group') {
               return (
-                <tr key={item.key} className="rp-day-group">
-                  <td colSpan={4}>
-                    <div>
-                      <span>🗓️ DIA {String(item.day).padStart(2, '0')}</span>
-                      <small>SUBTOTAL: <strong>{brl.format(item.subtotal)}</strong></small>
-                    </div>
-                  </td>
-                </tr>
+                <DayGroupRow
+                  key={item.key}
+                  day={item.day}
+                  subtotal={item.subtotal}
+                />
               );
             }
             if (item.type === 'day-head') {
               return (
-                <tr key={item.key} className="rp-group-head">
-                  <th>VALOR</th>
-                  <th>DESCRIÇÃO</th>
-                  <th>FUNCIONÁRIO</th>
-                  <th aria-label="Conferência"></th>
-                </tr>
+                <DayHeadRow
+                  key={item.key}
+                />
               );
             }
             const row = item.entry;
             const isChecked = row.status === 'conferido';
             const isSelected = selectedIds.has(String(row.id));
+            const isRowEditing = editingCell?.id === row.id;
             return (
-              <tr
+              <LedgerRow
                 key={row.id}
-                id={`report-row-${row.id}`}
-                className={`${isChecked ? 'is-conferido' : ''} ${isSelected ? 'is-selected' : ''}`.trim() || undefined}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  const isSel = selectedIds.has(String(row.id));
-                  const isMulti = isSel && selectedIds.size > 1;
-                  const targetRows = isMulti
-                    ? displayedRows.filter((r: any) => selectedIds.has(String(r.id)))
-                    : [row];
-                  setContextMenu({
-                    row,
-                    isMulti,
-                    targetRows,
-                    x: Math.min(event.clientX, window.innerWidth - 210),
-                    y: Math.min(event.clientY, window.innerHeight - 190),
-                  });
-                }}
-                title="Clique com o botão direito para ver as ações"
-              >
-                {renderEditableCell(row, 'valor', 'Valor', brl.format(row.valor))}
-                {renderEditableCell(row, 'cliente', 'Descrição', row.cliente || '—')}
-                {renderEditableCell(row, 'funcionario', 'Funcionário', row.funcionario || '—')}
-                <td
-                  className={`rp-check-cell ${isSelected ? 'is-selected' : ''}`}
-                  onClick={(e) => {
-                    if ((e.target as HTMLElement).tagName.toLowerCase() !== 'input') {
-                      e.preventDefault();
-                      handleRowClick(e, row.id);
-                    }
-                  }}
-                  title="Clique fora da caixa para selecionar com Ctrl / Shift"
-                >
-                  <div
-                    className="rp-check-action"
-                    title={isChecked ? 'Desmarcar conferência' : 'Marcar como conferido'}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isChecked}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                      }}
-                      onChange={() => void onToggleStatus?.(row)}
-                      aria-label={isChecked ? 'Reabrir lançamento' : 'Marcar como conferido'}
-                    />
-                  </div>
-                </td>
-              </tr>
+                row={row}
+                kind={kind}
+                isChecked={isChecked}
+                isSelected={isSelected}
+                isEditing={isRowEditing}
+                editingField={isRowEditing ? editingCell?.field : undefined}
+                cellDraft={cellDraft}
+                onSetCellDraft={setCellDraft}
+                onBeginInlineEdit={beginInlineEdit}
+                onCancelInlineEdit={cancelInlineEdit}
+                onCommitInlineEdit={commitInlineEdit}
+                onContextMenu={handleContextMenu}
+                onRowClick={handleRowClick}
+                onToggleStatus={onToggleStatus}
+              />
             );
           })}
           {bottomSpacerHeight > 0 && (

@@ -1086,6 +1086,7 @@ class GoogleDriveSync {
 
     // Salva no SQLite local
     this.db.saveVersionHistory({
+      id: `vh_${versionId}`,
       file_key: key,
       loterica,
       ano: Number(ano),
@@ -1275,6 +1276,7 @@ class GoogleDriveSync {
             snapDoc = await this.downloadFileContent(sf.file.id, accessToken);
             if (snapDoc && snapDoc.entries) {
               this.db.saveVersionHistory({
+                id: `vh_${snapDoc.version_id}`,
                 file_key: key,
                 loterica,
                 ano,
@@ -1846,6 +1848,7 @@ class GoogleDriveSync {
 
     // Grava histórico
     this.db.saveVersionHistory({
+      id: `vh_${update.remoteVersionId}`,
       file_key: fileKey,
       loterica: update.loterica,
       ano: update.ano,
@@ -1933,6 +1936,7 @@ class GoogleDriveSync {
     this.db.setSyncState(`last_version_num_${fileKey}`, nextVersionNum);
 
     this.db.saveVersionHistory({
+      id: `vh_${newVersionId}`,
       file_key: fileKey,
       loterica: update.loterica,
       ano: update.ano,
@@ -2144,6 +2148,7 @@ class GoogleDriveSync {
     // Se não publicou remotamente (ex: offline), salva no SQLite local
     if (!publishedRemotely) {
       this.db.saveVersionHistory({
+        id: `vh_${newVersionId}`,
         file_key: fileKey,
         loterica,
         ano: Number(ano),

@@ -40,7 +40,8 @@ function findFirstGE(arr: Float64Array, target: number, maxIdx: number): number 
  * High-performance virtual windowing hook for variable-height rows in the Relatório Ledger table.
  * - Computes cumulative prefix heights in O(N) when items list changes.
  * - Uses binary search in O(log N) on scroll to determine visible item range.
- * - Only renders the visible subset of rows (+ configurable overscan in pixels).
+ * - Only triggers React re-renders when startIndex, endIndex, or spacer heights actually change,
+ *   bailing out on intra-row scroll ticks and letting the browser scroll at native 60+ FPS.
  * - Automatically falls back to non-virtual mode in headless/test environments (JSDOM where clientHeight is 0)
  *   or when item count is small, ensuring 100% test compatibility.
  */
@@ -51,7 +52,6 @@ export function useRelatorioVirtualTable<T>({
   minItemsToVirtualize = 35,
 }: UseRelatorioVirtualTableOptions<T>): UseRelatorioVirtualTableReturn<T> {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [scrollTop, setScrollTop] = useState(0);
   const [containerHeight, setContainerHeight] = useState(0);
 
   // Compute prefix heights array and total height
@@ -65,18 +65,92 @@ export function useRelatorioVirtualTable<T>({
     return { prefixHeights: heights, totalHeight: heights[len] };
   }, [items, getItemHeight]);
 
+  const [range, setRange] = useState(() => ({
+    startIndex: 0,
+    endIndex: items.length,
+    topSpacerHeight: 0,
+    bottomSpacerHeight: 0,
+  }));
+
+  const computeRange = useCallback(
+    (st: number, ch: number) => {
+      const len = items.length;
+      const isVirt = ch > 0 && len > minItemsToVirtualize;
+
+      let newStart = 0;
+      let newEnd = len;
+      let newTop = 0;
+      let newBottom = 0;
+
+      if (isVirt && len > 0) {
+        const minVisibleY = Math.max(0, st - overscanPx);
+        const maxVisibleY = Math.min(totalHeight, st + ch + overscanPx);
+
+        const startBoundary = findFirstGE(prefixHeights, minVisibleY, len + 1);
+        newStart = Math.max(0, startBoundary - 1);
+
+        const endBoundary = findFirstGE(prefixHeights, maxVisibleY, len + 1);
+        newEnd = Math.min(len, Math.max(newStart + 1, endBoundary));
+
+        newTop = prefixHeights[newStart];
+        newBottom = Math.max(0, totalHeight - prefixHeights[newEnd]);
+      }
+
+      return {
+        startIndex: newStart,
+        endIndex: newEnd,
+        topSpacerHeight: newTop,
+        bottomSpacerHeight: newBottom,
+      };
+    },
+    [items.length, minItemsToVirtualize, overscanPx, totalHeight, prefixHeights]
+  );
+
+  // Synchronize range when prefixHeights / items change
+  useEffect(() => {
+    const el = containerRef.current;
+    const ch = el ? el.clientHeight : 0;
+    const st = el ? el.scrollTop : 0;
+    const nextRange = computeRange(st, ch);
+    setRange((prev) => {
+      if (
+        prev.startIndex === nextRange.startIndex &&
+        prev.endIndex === nextRange.endIndex &&
+        prev.topSpacerHeight === nextRange.topSpacerHeight &&
+        prev.bottomSpacerHeight === nextRange.bottomSpacerHeight
+      ) {
+        return prev;
+      }
+      return nextRange;
+    });
+  }, [computeRange]);
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
-    setContainerHeight(el.clientHeight);
+    const initialHeight = el.clientHeight;
+    if (initialHeight > 0) {
+      setContainerHeight(initialHeight);
+    }
 
     let rafId: number | null = null;
     const onScroll = () => {
       if (rafId !== null) return;
       rafId = requestAnimationFrame(() => {
         if (el) {
-          setScrollTop(el.scrollTop);
+          const nextRange = computeRange(el.scrollTop, el.clientHeight);
+          setRange((prev) => {
+            if (
+              prev.startIndex === nextRange.startIndex &&
+              prev.endIndex === nextRange.endIndex &&
+              prev.topSpacerHeight === nextRange.topSpacerHeight &&
+              prev.bottomSpacerHeight === nextRange.bottomSpacerHeight
+            ) {
+              return prev; // React bail-out: zero re-render during intra-row scroll ticks
+            }
+            return nextRange;
+          });
         }
         rafId = null;
       });
@@ -101,34 +175,14 @@ export function useRelatorioVirtualTable<T>({
       el.removeEventListener('scroll', onScroll);
       resizeObserver?.disconnect();
     };
-  }, [containerRef]);
+  }, [computeRange]);
 
-  // When containerHeight is 0 (e.g. during test runs in JSDOM) or when items count is small, do not virtualize.
   const isVirtual = containerHeight > 0 && items.length > minItemsToVirtualize;
-
-  let startIndex = 0;
-  let endIndex = items.length;
-  let topSpacerHeight = 0;
-  let bottomSpacerHeight = 0;
-
-  if (isVirtual && items.length > 0) {
-    const minVisibleY = Math.max(0, scrollTop - overscanPx);
-    const maxVisibleY = Math.min(totalHeight, scrollTop + containerHeight + overscanPx);
-
-    const startBoundary = findFirstGE(prefixHeights, minVisibleY, items.length + 1);
-    startIndex = Math.max(0, startBoundary - 1);
-
-    const endBoundary = findFirstGE(prefixHeights, maxVisibleY, items.length + 1);
-    endIndex = Math.min(items.length, Math.max(startIndex + 1, endBoundary));
-
-    topSpacerHeight = prefixHeights[startIndex];
-    bottomSpacerHeight = Math.max(0, totalHeight - prefixHeights[endIndex]);
-  }
 
   const visibleItems = useMemo(() => {
     if (!isVirtual) return items;
-    return items.slice(startIndex, endIndex);
-  }, [items, isVirtual, startIndex, endIndex]);
+    return items.slice(range.startIndex, range.endIndex);
+  }, [items, isVirtual, range.startIndex, range.endIndex]);
 
   const scrollToIndex = useCallback(
     (index: number) => {
@@ -146,11 +200,11 @@ export function useRelatorioVirtualTable<T>({
   return {
     containerRef,
     visibleItems,
-    startIndex,
-    endIndex,
+    startIndex: range.startIndex,
+    endIndex: range.endIndex,
     totalHeight,
-    topSpacerHeight,
-    bottomSpacerHeight,
+    topSpacerHeight: range.topSpacerHeight,
+    bottomSpacerHeight: range.bottomSpacerHeight,
     isVirtual,
     scrollToIndex,
   };

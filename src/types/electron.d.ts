@@ -59,8 +59,10 @@ export interface LoteElectronAPI {
     addLancamento: (entry: Record<string, unknown>) => Promise<any>;
     updateLancamento: (id: string, updates: Record<string, unknown>) => Promise<any>;
     toggleStatus: (id: string, status: string, notes?: string) => Promise<any>;
+    toggleStatusBatch: (items: any[], status: string) => Promise<any>;
     updateObservacoes: (id: string, notes: string, status?: string) => Promise<any>;
     deleteLancamento: (id: string) => Promise<boolean>;
+    deleteLancamentoBatch: (ids: string[]) => Promise<any>;
     getFuncionarios: (loterica: string) => Promise<string[]>;
     renameFuncionario: (loterica: string, oldName: string, newName: string) => Promise<any>;
     getOfficialBaseInfo: () => Promise<any>;
