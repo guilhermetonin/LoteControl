@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { LOTERICAS } from '../protege/logic/constants.js';
 import { DayFilterPopover, LotericaSelector, ToastNotification, type LotericaOption, type ToastItem } from '../../app/components/SharedMenus';
+import { useRelatorioTableSelection } from './useRelatorioTableSelection';
 import './relatorio.css';
 
 const companies = ['CAÇULA', 'SORTE GRANDE', 'PUPINS'];
@@ -452,8 +453,8 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
       <div className="rp-content">
         {section !== 'historico' && <>
           {loading ? <div className="rp-loading"><span className="rp-spinner" />Carregando lançamentos…</div> : <div className="rp-ledgers">
-            <Ledger title="PIX FALTANDO" kind="falta" entries={faltas} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onDelete={(row: any) => window.confirm('Excluir este lançamento? A exclusão será lógica e sincronizada.') && void action(() => api!.deleteLancamento(row.id), 'Lançamento removido.')} />
-            <Ledger title="PIX SOBRANDO" kind="sobra" entries={sobras} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onDelete={(row: any) => window.confirm('Excluir este lançamento? A exclusão será lógica e sincronizada.') && void action(() => api!.deleteLancamento(row.id), 'Lançamento removido.')} />
+            <Ledger title="PIX FALTANDO" kind="falta" entries={faltas} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onDelete={(row: any) => window.confirm('Excluir este lançamento? A exclusão será lógica e sincronizada.') && void action(() => api!.deleteLancamento(row.id), 'Lançamento removido.')} isActive={isActive} />
+            <Ledger title="PIX SOBRANDO" kind="sobra" entries={sobras} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onDelete={(row: any) => window.confirm('Excluir este lançamento? A exclusão será lógica e sincronizada.') && void action(() => api!.deleteLancamento(row.id), 'Lançamento removido.')} isActive={isActive} />
           </div>}
         </>}
 
@@ -567,7 +568,7 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
   );
 }
 
-export function Ledger({ title, kind, entries, onEdit, onInlineSave, onToggleStatus, onDelete }: any) {
+export function Ledger({ title, kind, entries, onEdit, onInlineSave, onToggleStatus, onDelete, isActive = true }: any) {
   const [editingCell, setEditingCell] = useState<{ id: string; field: 'valor' | 'cliente' | 'funcionario' } | null>(null);
   const [cellDraft, setCellDraft] = useState('');
   const savingCell = useRef(false);
@@ -587,6 +588,29 @@ export function Ledger({ title, kind, entries, onEdit, onInlineSave, onToggleSta
     entries.forEach((entry: any) => { const day = Number(entry.dia) || 0; groups.set(day, [...(groups.get(day) || []), entry]); });
     return [...groups.entries()].sort(([left], [right]) => left - right);
   }, [entries]);
+
+  const displayedRows = useMemo(() => {
+    return groupedEntries.flatMap(([_, dayEntries]) => dayEntries);
+  }, [groupedEntries]);
+
+  const {
+    selectedIds,
+    handleRowClick,
+    clearSelection,
+    summary,
+  } = useRelatorioTableSelection(displayedRows);
+
+  useEffect(() => {
+    if (isActive === false) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (activeCell.current) return;
+      if (e.key === 'Escape' && selectedIds.size > 0) {
+        clearSelection();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isActive, selectedIds.size, clearSelection]);
 
   function beginInlineEdit(row: any, field: 'valor' | 'cliente' | 'funcionario' = 'cliente') {
     savingCell.current = false;
@@ -681,14 +705,68 @@ export function Ledger({ title, kind, entries, onEdit, onInlineSave, onToggleSta
     <div className="rp-ledger-scroll"><table><colgroup><col className="rp-col-value" /><col className="rp-col-description" /><col className="rp-col-employee" /><col className="rp-col-action" /></colgroup><tbody>{groupedEntries.map(([day, dayEntries]) => <React.Fragment key={day}>
       <tr className="rp-day-group"><td colSpan={4}><div><span>🗓️ DIA {String(day).padStart(2, '0')}</span><small>SUBTOTAL: <strong>{brl.format(dayEntries.reduce((sum: number, row: any) => sum + Number(row.valor || 0), 0))}</strong></small></div></td></tr>
       <tr className="rp-group-head"><th>VALOR</th><th>DESCRIÇÃO</th><th>FUNCIONÁRIO</th><th aria-label="Conferência"></th></tr>
-      {dayEntries.map((row: any) => <tr key={row.id} className={row.status === 'conferido' ? 'is-conferido' : undefined} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ row, x: Math.min(event.clientX, window.innerWidth - 210), y: Math.min(event.clientY, window.innerHeight - 190) }); }} title="Clique com o botão direito para ver as ações">
+      {dayEntries.map((row: any) => {
+        const isChecked = row.status === 'conferido';
+        const isSelected = selectedIds.has(String(row.id));
+        return <tr key={row.id} id={`report-row-${row.id}`} className={`${isChecked ? 'is-conferido' : ''} ${isSelected ? 'is-selected' : ''}`.trim() || undefined} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ row, x: Math.min(event.clientX, window.innerWidth - 210), y: Math.min(event.clientY, window.innerHeight - 190) }); }} title="Clique com o botão direito para ver as ações">
         {renderEditableCell(row, 'valor', 'Valor', brl.format(row.valor))}
         {renderEditableCell(row, 'cliente', 'Descrição', row.cliente || '—')}
         {renderEditableCell(row, 'funcionario', 'Funcionário', row.funcionario || '—')}
-        <td><label className="rp-check-action" title={row.status === 'conferido' ? 'Desmarcar conferência' : 'Marcar como conferido'}><input type="checkbox" checked={row.status === 'conferido'} onChange={() => void onToggleStatus?.(row)} aria-label={row.status === 'conferido' ? 'Reabrir lançamento' : 'Marcar como conferido'} /></label></td>
-      </tr>)}</React.Fragment>)}</tbody></table>
+        <td
+          className={`rp-check-cell ${isSelected ? 'is-selected' : ''}`}
+          onClick={(e) => {
+            if ((e.target as HTMLElement).tagName.toLowerCase() !== 'input') {
+              e.preventDefault();
+              handleRowClick(e, row.id);
+            }
+          }}
+          title="Clique fora da caixa para selecionar com Ctrl / Shift"
+        >
+          <div
+            className="rp-check-action"
+            title={isChecked ? 'Desmarcar conferência' : 'Marcar como conferido'}
+          >
+            <input
+              type="checkbox"
+              checked={isChecked}
+              onClick={(e) => {
+                e.stopPropagation();
+              }}
+              onChange={() => void onToggleStatus?.(row)}
+              aria-label={isChecked ? 'Reabrir lançamento' : 'Marcar como conferido'}
+            />
+          </div>
+        </td>
+      </tr>;
+    })}</React.Fragment>)}</tbody></table>
       {!entries.length && <div className="rp-empty">Nenhum lançamento {kind === 'falta' ? 'faltando' : 'sobrando'} neste filtro.</div>}
     </div>
+    {summary && summary.count > 0 && (
+      <footer
+        className="rp-selection-summary"
+        role="region"
+        aria-label="Resumo da seleção de linhas"
+      >
+        <div className="rp-selection-summary-info">
+          <span className="rp-selection-summary-title">Resumo da Seleção:</span>
+          <span className="rp-selection-summary-values">
+            Quantidade: <strong>{summary.count}</strong>
+            <span className="rp-selection-summary-divider">|</span>
+            Total: <strong>{brl.format(summary.totalValor)}</strong>
+            <span className="rp-selection-summary-divider">|</span>
+            Média: <strong>{brl.format(summary.mediaValor)}</strong>
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={clearSelection}
+          className="rp-selection-clear-btn"
+          title="Limpar seleção de linhas (Esc)"
+        >
+          Limpar seleção (Esc)
+        </button>
+      </footer>
+    )}
     {contextMenu && <div className="rp-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} role="menu" onClick={(event) => event.stopPropagation()}><strong>{brl.format(contextMenu.row.valor)} · Dia {String(contextMenu.row.dia).padStart(2, '0')}</strong><button type="button" onClick={() => { setContextMenu(null); onEdit(contextMenu.row); }}>Editar lançamento</button><button type="button" className="danger" onClick={() => { setContextMenu(null); onDelete(contextMenu.row); }}>Excluir lançamento</button></div>}
   </section>;
 }

@@ -474,6 +474,118 @@
   background-color: #bbf7d0 !important;
 }
 
+/* Selected Row Highlight (Spreadsheet Multi-Selection) */
+.rp-ledger tbody tr.is-selected td {
+  background-color: #e0f2fe !important;
+  border-bottom-color: #bae6fd !important;
+  border-right-color: #bae6fd !important;
+}
+.rp-ledger tbody tr.is-selected td:first-child {
+  border-left: 3px solid #0284c7;
+}
+.rp-ledger tbody tr.is-selected td:last-child {
+  border-right: 0 !important;
+}
+.rp-ledger tbody tr.is-selected:hover td {
+  background-color: #bae6fd !important;
+}
+
+/* Row is both conferido AND selected */
+.rp-ledger tbody tr.is-conferido.is-selected td {
+  background-color: #d1fae5 !important;
+  border-bottom-color: #6ee7b7 !important;
+  border-right-color: #a7f3d0 !important;
+}
+.rp-ledger tbody tr.is-conferido.is-selected td:first-child {
+  border-left: 3px solid #059669;
+}
+
+/* Checkbox cell interaction area */
+.rp-ledger td.rp-check-cell {
+  cursor: pointer;
+  user-select: none;
+}
+.rp-ledger td.rp-check-cell:hover {
+  background-color: rgba(2, 132, 199, 0.08);
+}
+
+/* Selection Financial Summary Bar (docked footer inside ledger when rows are selected) */
+.rp-selection-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 8px 14px;
+  background: #f0f9ff;
+  border-top: 1px solid #bae6fd;
+  color: #0c4a6e;
+  font-size: 12px;
+  line-height: 1.4;
+  animation: rp-fade-in 150ms ease-out;
+}
+
+.rp-selection-summary-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rp-selection-summary-title {
+  font-weight: 750;
+  color: #0369a1;
+}
+
+.rp-selection-summary-values {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+  color: #082f49;
+}
+
+.rp-selection-summary-values strong {
+  font-weight: 800;
+  color: #0c4a6e;
+}
+
+.rp-selection-summary-divider {
+  color: #7dd3fc;
+  font-weight: 400;
+  margin: 0 2px;
+}
+
+.rp-selection-clear-btn {
+  padding: 3px 8px;
+  border: 1px solid #bae6fd;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #0369a1;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 120ms ease;
+}
+
+.rp-selection-clear-btn:hover {
+  background: #e0f2fe;
+  color: #0c4a6e;
+  border-color: #7dd3fc;
+}
+
+@keyframes rp-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .rp-empty,
 .rp-loading {
   display: flex;
