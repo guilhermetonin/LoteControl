@@ -1296,3 +1296,151 @@
     grid-column: auto;
   }
 }
+
+/* Modais de Exclusão e Importação do Relatório */
+.rp-button-danger {
+  background: #e11d48;
+  color: #ffffff;
+  border: 1px solid #be123c;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-size: 13px;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+.rp-button-danger:hover:not(:disabled) {
+  background: #be123c;
+}
+.rp-button-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rp-delete-confirm-overlay {
+  z-index: 1350;
+}
+.rp-delete-body {
+  padding: 16px 0;
+  font-size: 13px;
+  color: #334155;
+  line-height: 1.5;
+}
+
+.rp-import-overlay {
+  z-index: 1320;
+}
+.rp-import-modal {
+  width: min(720px, 100%);
+}
+.rp-import-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 14px;
+}
+.rp-import-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+.rp-import-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+.rp-import-stat-card span {
+  font-size: 11px;
+  color: #64748b;
+}
+.rp-import-stat-card strong {
+  font-size: 13px;
+  color: #0f172a;
+}
+.rp-import-stat-card strong.total {
+  color: #12385f;
+  font-weight: 800;
+}
+.rp-import-alert {
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rp-import-alert-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.rp-import-alert-danger {
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  color: #9f1239;
+}
+.rp-import-alert-danger .rp-import-alert-header svg {
+  color: #e11d48;
+}
+.rp-import-alert-warning {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+.rp-import-alert-warning .rp-import-alert-header svg {
+  color: #d97706;
+}
+.rp-import-list {
+  margin: 0;
+  padding: 8px 12px;
+  list-style: disc inside;
+  background: #ffffff;
+  border-radius: 7px;
+  max-height: 160px;
+  overflow-y: auto;
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rp-import-error-list {
+  border: 1px solid #fecdd3;
+  color: #be123c;
+}
+.rp-import-warning-list {
+  border: 1px solid #fde68a;
+  color: #b45309;
+}
+.rp-import-info-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: #f0f7ff;
+  border: 1px solid #bae6fd;
+  border-radius: 9px;
+  font-size: 11px;
+  color: #0369a1;
+  line-height: 1.45;
+}
+.rp-import-info-box strong {
+  color: #0c4a6e;
+  font-size: 12px;
+}
+
+@media (max-width: 600px) {
+  .rp-import-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+}

@@ -30,6 +30,11 @@ export interface UseRelatorioTableSelectionReturn {
  * - Shift + click after another selection: re-evaluates range using the persistent anchor.
  * - Automatically purges selected IDs that no longer exist in the provided items list.
  * - Computes real-time financial summary: total, count, and average formatted in BRL using centavos.
+ *
+ * Performance-optimized:
+ * - Uses indexed Map for O(1) anchor and target lookups (eliminates O(N) findIndex).
+ * - Computes financial summary in O(K) over selected items only (eliminates full array filter).
+ * - Avoids re-allocating Set/arrays when selection hasn't changed.
  */
 export function useRelatorioTableSelection<T extends RelatorioSelectionItem>(
   items: T[]
@@ -37,25 +42,45 @@ export function useRelatorioTableSelection<T extends RelatorioSelectionItem>(
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [anchorId, setAnchorId] = useState<string | null>(null);
 
+  // Pre-index items for O(1) lookups
+  const { idToIndex, idToItem, validIds } = useMemo(() => {
+    const idMap = new Map<string, number>();
+    const itemMap = new Map<string, T>();
+    const idSet = new Set<string>();
+    for (let i = 0; i < items.length; i++) {
+      const strId = String(items[i].id);
+      idMap.set(strId, i);
+      itemMap.set(strId, items[i]);
+      idSet.add(strId);
+    }
+    return { idToIndex: idMap, idToItem: itemMap, validIds: idSet };
+  }, [items]);
+
   // Synchronize selection with items list: remove IDs that are no longer visible or present
   useEffect(() => {
     setSelectedIds((prev) => {
       if (prev.size === 0) return prev;
-      const currentValidIds = new Set(items.map((i) => String(i.id)));
+      let hasInvalid = false;
+      for (const id of prev) {
+        if (!validIds.has(id)) {
+          hasInvalid = true;
+          break;
+        }
+      }
+      if (!hasInvalid) return prev;
       const next = new Set<string>();
-      prev.forEach((id) => {
-        if (currentValidIds.has(id)) {
+      for (const id of prev) {
+        if (validIds.has(id)) {
           next.add(id);
         }
-      });
-      if (next.size === prev.size) return prev;
+      }
       return next;
     });
 
-    if (anchorId && !items.some((i) => String(i.id) === String(anchorId))) {
+    if (anchorId && !validIds.has(String(anchorId))) {
       setAnchorId(null);
     }
-  }, [items, anchorId]);
+  }, [validIds, anchorId]);
 
   const handleRowClick = useCallback(
     (e: React.MouseEvent, rowId: string | number) => {
@@ -71,10 +96,10 @@ export function useRelatorioTableSelection<T extends RelatorioSelectionItem>(
 
       // 1. Shift + Click: Range Selection from persistent anchor
       if (isShift && anchorId) {
-        const anchorIndex = items.findIndex((t) => String(t.id) === String(anchorId));
-        const targetIndex = items.findIndex((t) => String(t.id) === idStr);
+        const anchorIndex = idToIndex.get(String(anchorId));
+        const targetIndex = idToIndex.get(idStr);
 
-        if (anchorIndex !== -1 && targetIndex !== -1) {
+        if (anchorIndex !== undefined && targetIndex !== undefined) {
           const start = Math.min(anchorIndex, targetIndex);
           const end = Math.max(anchorIndex, targetIndex);
           const rangeIds = items.slice(start, end + 1).map((t) => String(t.id));
@@ -82,7 +107,9 @@ export function useRelatorioTableSelection<T extends RelatorioSelectionItem>(
           setSelectedIds((prev) => {
             if (isCtrlOrMeta) {
               const next = new Set(prev);
-              rangeIds.forEach((id) => next.add(id));
+              for (let i = 0; i < rangeIds.length; i++) {
+                next.add(rangeIds[i]);
+              }
               return next;
             }
             return new Set(rangeIds);
@@ -111,7 +138,7 @@ export function useRelatorioTableSelection<T extends RelatorioSelectionItem>(
       setSelectedIds(new Set([idStr]));
       setAnchorId(idStr);
     },
-    [items, anchorId]
+    [items, anchorId, idToIndex]
   );
 
   const clearSelection = useCallback(() => {
@@ -123,15 +150,22 @@ export function useRelatorioTableSelection<T extends RelatorioSelectionItem>(
   const summary: SelectionSummary | null = useMemo(() => {
     if (selectedIds.size === 0) return null;
 
-    const selectedItems = items.filter((t) => selectedIds.has(String(t.id)));
-    const count = selectedItems.length;
-    if (count === 0) return null;
+    let count = 0;
+    let totalCentavos = 0;
 
-    const totalCentavos = selectedItems.reduce((acc, t) => {
-      const raw = t.valor;
-      const num = typeof raw === 'number' ? raw : Number(String(raw || '').replace(',', '.'));
-      return acc + (Number.isFinite(num) ? Math.round(num * 100) : 0);
-    }, 0);
+    for (const id of selectedIds) {
+      const item = idToItem.get(id);
+      if (item) {
+        count++;
+        const raw = item.valor;
+        const num = typeof raw === 'number' ? raw : Number(String(raw || '').replace(',', '.'));
+        if (Number.isFinite(num)) {
+          totalCentavos += Math.round(num * 100);
+        }
+      }
+    }
+
+    if (count === 0) return null;
 
     const totalValor = totalCentavos / 100;
     const mediaValor = totalCentavos / count / 100;
@@ -142,7 +176,7 @@ export function useRelatorioTableSelection<T extends RelatorioSelectionItem>(
       mediaValor,
       totalCentavos,
     };
-  }, [items, selectedIds]);
+  }, [selectedIds, idToItem]);
 
   return {
     selectedIds,

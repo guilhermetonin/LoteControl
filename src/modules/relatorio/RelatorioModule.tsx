@@ -2,11 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as XLSX from 'xlsx';
 import {
   AlertTriangle, ArrowDownUp, CalendarDays, Check, ChevronLeft, ChevronRight, Clock3,
-  Cloud, Download, FileJson, Plus, RefreshCw, Search, Settings, Settings2, Trash2, UserRoundPen, X,
+  Cloud, Download, FileJson, FileSpreadsheet, Plus, RefreshCw, Search, Settings, Settings2, Trash2, Upload, UserRoundPen, X,
 } from 'lucide-react';
 import { LOTERICAS } from '../protege/logic/constants.js';
 import { DayFilterPopover, LotericaSelector, ToastNotification, type LotericaOption, type ToastItem } from '../../app/components/SharedMenus';
 import { useRelatorioTableSelection } from './useRelatorioTableSelection';
+import { useRelatorioVirtualTable } from './useRelatorioVirtualTable';
 import './relatorio.css';
 
 const companies = ['CAÇULA', 'SORTE GRANDE', 'PUPINS'];
@@ -20,6 +21,27 @@ const monthLabels = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
 const brl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
 type Section = 'operacao' | 'historico' | 'sincronizacao';
 type Draft = { id?: string; tipo: 'falta' | 'sobra'; dia: string; valor: string; funcionario: string; cliente: string; status: string };
+
+const PADRAO_COLUNAS = ['Loterica', 'Ano', 'Mes', 'Categoria', 'Dia', 'Descricao', 'Funcionaria', 'Valor', 'Conferido'];
+
+const INSTRUCOES_ROWS = [
+  { Coluna: 'A', Campo: 'Loterica', Obrigatório: 'Sim', 'Valores aceitos': 'CAÇULA, SORTE GRANDE ou PUPINS', Descrição: 'Nome da lotérica cadastrada no sistema.' },
+  { Coluna: 'B', Campo: 'Ano', Obrigatório: 'Sim', 'Valores aceitos': 'Ano com 4 dígitos (ex: 2026)', Descrição: 'Ano do lançamento.' },
+  { Coluna: 'C', Campo: 'Mes', Obrigatório: 'Sim', 'Valores aceitos': '1 a 12', Descrição: 'Mês numérico do lançamento.' },
+  { Coluna: 'D', Campo: 'Categoria', Obrigatório: 'Sim', 'Valores aceitos': 'FALTANDO ou SOBRANDO', Descrição: 'Categoria do PIX.' },
+  { Coluna: 'E', Campo: 'Dia', Obrigatório: 'Sim', 'Valores aceitos': '1 a 31 (conforme o mês)', Descrição: 'Dia do lançamento no mês informado.' },
+  { Coluna: 'F', Campo: 'Descricao', Obrigatório: 'Não', 'Valores aceitos': 'Texto livre', Descrição: 'Cliente ou descrição do lançamento exibida na tabela.' },
+  { Coluna: 'G', Campo: 'Funcionaria', Obrigatório: 'Não', 'Valores aceitos': 'Texto livre', Descrição: 'Nome da funcionária responsável.' },
+  { Coluna: 'H', Campo: 'Valor', Obrigatório: 'Sim', 'Valores aceitos': 'Número maior que zero (ex: 150.00)', Descrição: 'Valor numérico do lançamento (sem "R$").' },
+  { Coluna: 'I', Campo: 'Conferido', Obrigatório: 'Sim', 'Valores aceitos': 'TRUE ou FALSE', Descrição: 'Estado da conferência: marcado ou desmarcado.' },
+];
+
+const EXEMPLO_ROWS = [
+  { Loterica: 'CAÇULA', Ano: 2026, Mes: 10, Categoria: 'FALTANDO', Dia: 5, Descricao: 'João Silva - Diferença de caixa', Funcionaria: 'Ana', Valor: 150.00, Conferido: 'TRUE' },
+  { Loterica: 'CAÇULA', Ano: 2026, Mes: 10, Categoria: 'SOBRANDO', Dia: 5, Descricao: 'Maria Santos - Depósito PIX', Funcionaria: 'Beatriz', Valor: 85.50, Conferido: 'FALSE' },
+  { Loterica: 'SORTE GRANDE', Ano: 2026, Mes: 10, Categoria: 'FALTANDO', Dia: 12, Descricao: 'Comprovante não localizado', Funcionaria: 'Camila', Valor: 200.00, Conferido: 'FALSE' },
+  { Loterica: 'PUPINS', Ano: 2026, Mes: 10, Categoria: 'SOBRANDO', Dia: 18, Descricao: 'Fernanda Costa - Avulso PIX', Funcionaria: 'Daniela', Valor: 50.00, Conferido: 'TRUE' },
+];
 
 function amountCents(raw: string) {
   let value = String(raw || '').replace(/R\$\s?/g, '').trim();
@@ -67,6 +89,27 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
   const [conflicts, setConflicts] = useState<any[]>([]);
   const [remoteDiff, setRemoteDiff] = useState<any>(null);
   const [renameForm, setRenameForm] = useState<{ oldName: string; newName: string } | null>(null);
+  const [importModal, setImportModal] = useState<{
+    fileName: string;
+    validRows: Array<{
+      lineNum: number;
+      loterica: string;
+      ano: number;
+      mes: number;
+      dia: number;
+      tipo: 'falta' | 'sobra';
+      data_formatada: string;
+      valor: number;
+      funcionario: string;
+      cliente: string;
+      observacoes: string;
+      status: 'conferido' | 'pendente';
+    }>;
+    errors: string[];
+    duplicates: { lineNum: number; details: string }[];
+  } | null>(null);
+  const [importing, setImporting] = useState(false);
+  const importFileInputRef = useRef<HTMLInputElement>(null);
 
   const api = window.electronAPI?.report;
   const refreshData = useCallback(async (showSpinner = true) => {
@@ -164,15 +207,31 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
   }, [api, company, year, month, dayFilter, bulk?.scope, bulk?.category, bulk?.day]);
 
   const sortedRows = useMemo(() => [...rows].sort((a, b) => Number(a.dia) - Number(b.dia) || Number(b.valor) - Number(a.valor)), [rows]);
-  const faltas = sortedRows.filter((row) => row.tipo === 'falta');
-  const sobras = sortedRows.filter((row) => row.tipo === 'sobra');
-  const faltasCentavos = faltas.reduce((sum, row) => sum + Math.round(Number(row.valor || 0) * 100), 0);
-  const sobrasCentavos = sobras.reduce((sum, row) => sum + Math.round(Number(row.valor || 0) * 100), 0);
+
+  const { faltas, sobras, faltasCentavos, sobrasCentavos } = useMemo(() => {
+    const f: any[] = [];
+    const s: any[] = [];
+    let fc = 0;
+    let sc = 0;
+    for (let i = 0; i < sortedRows.length; i++) {
+      const row = sortedRows[i];
+      const cents = Math.round(Number(row.valor || 0) * 100);
+      if (row.tipo === 'sobra') {
+        s.push(row);
+        sc += cents;
+      } else {
+        f.push(row);
+        fc += cents;
+      }
+    }
+    return { faltas: f, sobras: s, faltasCentavos: fc, sobrasCentavos: sc };
+  }, [sortedRows]);
+
   const filteredHistory = historyRows.filter((item) => `${item.summary || ''} ${item.device_name || ''} ${item.user_email || ''} ${item.version_num}`.toLowerCase().includes(historySearch.toLowerCase()));
   const historyPageCount = Math.max(1, Math.ceil(filteredHistory.length / 25));
   const visibleHistory = filteredHistory.slice(historyPage * 25, historyPage * 25 + 25);
 
-  async function action(operation: () => Promise<any>, successMessage?: string) {
+  const action = useCallback(async (operation: () => Promise<any>, successMessage?: string) => {
     setBusy(true); setError(''); setNotice('');
     try {
       const result = await operation();
@@ -181,18 +240,18 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
       return result;
     } catch (reason: any) { setError(reason?.message || String(reason)); return null; }
     finally { setBusy(false); }
-  }
+  }, [refreshData]);
 
-  function openNew(type: 'falta' | 'sobra') {
+  const openNew = useCallback((type: 'falta' | 'sobra') => {
     const suggestedDay = dayFilter || (year === now.getFullYear() && month === now.getMonth() + 1 ? now.getDate() : 1);
     setDraft({ tipo: type, dia: String(Math.min(suggestedDay, daysInMonth(year, month))), valor: '', funcionario: '', cliente: '', status: 'pendente' });
-  }
+  }, [dayFilter, year, month]);
 
-  function openEdit(row: any) {
+  const openEdit = useCallback((row: any) => {
     setDraft({ id: row.id, tipo: row.tipo, dia: String(row.dia), valor: valueDraft(row.valor), funcionario: row.funcionario || '', cliente: row.cliente || '', status: row.status || 'pendente' });
-  }
+  }, []);
 
-  async function saveDraft(event: React.FormEvent) {
+  const saveDraft = useCallback(async (event: React.FormEvent) => {
     event.preventDefault();
     if (!draft || !api) return;
     const dia = Number(draft.dia);
@@ -206,9 +265,9 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
     };
     const result = await action(() => draft.id ? api.updateLancamento(draft.id, payload) : api.addLancamento(payload), draft.id ? 'Lançamento atualizado.' : 'Lançamento incluído.');
     if (result !== null) setDraft(null);
-  }
+  }, [draft, api, company, year, month, action]);
 
-  async function saveInlineEdit(row: any, values: { dia: string; valor: string; cliente: string; funcionario: string }) {
+  const saveInlineEdit = useCallback(async (row: any, values: { dia: string; valor: string; cliente: string; funcionario: string }) => {
     if (!api) return false;
     const dia = Number(values.dia);
     const cents = amountCents(values.valor);
@@ -219,28 +278,384 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
       valor: cents / 100, cliente: values.cliente.trim(), funcionario: values.funcionario.trim(),
     }), 'Edição rápida salva.');
     return result !== null;
-  }
+  }, [api, company, year, month, action]);
 
-  async function toggleRowStatus(row: any) {
+  const toggleRowStatus = useCallback(async (row: any) => {
     if (!api) return;
     const status = row.status === 'conferido' ? 'pendente' : 'conferido';
     await action(() => api.toggleStatus(row.id, status, row.observacoes || ''));
-  }
+  }, [api, action]);
+
+  const handleDelete = useCallback(async (target: any | any[]) => {
+    const items = Array.isArray(target) ? target : [target];
+    if (!api || items.length === 0) return;
+    const count = items.length;
+    await action(async () => {
+      for (const item of items) {
+        await api.deleteLancamento(item.id);
+      }
+    }, count === 1 ? 'Lançamento removido.' : `${count} lançamentos removidos.`);
+  }, [api, action]);
 
   async function exportReport() {
-    const base = (items: any[]) => items.map((row) => ({ Dia: row.dia, Valor: Number(row.valor), Cliente: row.cliente, Funcionário: row.funcionario, Status: row.status, Data: row.data_formatada }));
+    const hasRecords = sortedRows.length > 0;
     const book = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(base(faltas)), 'Faltas');
-    XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(base(sobras)), 'Sobras');
+
+    if (!hasRecords) {
+      // Quando não há registros: gerar modelo padronizado pronto para preenchimento
+      const wsLancamentos = XLSX.utils.aoa_to_sheet([PADRAO_COLUNAS]);
+      XLSX.utils.book_append_sheet(book, wsLancamentos, 'Lançamentos');
+
+      const wsInstrucoes = XLSX.utils.json_to_sheet(INSTRUCOES_ROWS);
+      XLSX.utils.book_append_sheet(book, wsInstrucoes, 'Instruções');
+
+      const wsExemplo = XLSX.utils.json_to_sheet(EXEMPLO_ROWS);
+      XLSX.utils.book_append_sheet(book, wsExemplo, 'Exemplo');
+
+      const bytes = XLSX.write(book, { bookType: 'xlsx', type: 'array' }) as Uint8Array;
+      const defaultPath = 'Modelo-Importacao-Relatorio.xlsx';
+
+      if (window.electronAPI?.dialog) {
+        const save = await window.electronAPI.dialog.showSaveDialog({
+          title: 'Salvar Modelo de Planilha',
+          defaultPath,
+          filters: [{ name: 'Planilha Excel', extensions: ['xlsx'] }],
+        });
+        if (save.canceled || !save.filePath) return;
+        await window.electronAPI.dialog.saveFile(save.filePath, new Uint8Array(bytes));
+      } else {
+        const url = URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer as ArrayBuffer]));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = defaultPath;
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+      setNotice('Modelo de planilha padronizado gerado com as abas Lançamentos, Instruções e Exemplo.');
+      return;
+    }
+
+    // Quando há registros: exportar os dados reais utilizando os cabeçalhos padronizados
+    const allItems = sortedRows.map((row) => ({
+      Loterica: company,
+      Ano: year,
+      Mes: month,
+      Categoria: row.tipo === 'sobra' ? 'SOBRANDO' : 'FALTANDO',
+      Dia: Number(row.dia),
+      Descricao: row.cliente || '',
+      Funcionaria: row.funcionario || '',
+      Valor: Number(row.valor || 0),
+      Conferido: row.status === 'conferido' ? 'TRUE' : 'FALSE',
+    }));
+
+    const wsLancamentos = XLSX.utils.json_to_sheet(allItems, { header: PADRAO_COLUNAS });
+    XLSX.utils.book_append_sheet(book, wsLancamentos, 'Lançamentos');
+
+    const wsInstrucoes = XLSX.utils.json_to_sheet(INSTRUCOES_ROWS);
+    XLSX.utils.book_append_sheet(book, wsInstrucoes, 'Instruções');
+
+    const wsExemplo = XLSX.utils.json_to_sheet(EXEMPLO_ROWS);
+    XLSX.utils.book_append_sheet(book, wsExemplo, 'Exemplo');
+
+    const baseLegacy = (items: any[]) => items.map((row) => ({ Dia: row.dia, Valor: Number(row.valor), Cliente: row.cliente, Funcionário: row.funcionario, Status: row.status, Data: row.data_formatada }));
+    XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(baseLegacy(faltas)), 'Faltas');
+    XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(baseLegacy(sobras)), 'Sobras');
+
     const bytes = XLSX.write(book, { bookType: 'xlsx', type: 'array' }) as Uint8Array;
+    const defaultPath = `Relatorio-${company}-${year}-${String(month).padStart(2, '0')}.xlsx`;
+
     if (window.electronAPI?.dialog) {
-      const save = await window.electronAPI.dialog.showSaveDialog({ title: 'Exportar Relatório', defaultPath: `Relatorio-${company}-${year}-${String(month).padStart(2, '0')}.xlsx`, filters: [{ name: 'Planilha Excel', extensions: ['xlsx'] }] });
+      const save = await window.electronAPI.dialog.showSaveDialog({
+        title: 'Exportar Relatório',
+        defaultPath,
+        filters: [{ name: 'Planilha Excel', extensions: ['xlsx'] }],
+      });
       if (save.canceled || !save.filePath) return;
       await window.electronAPI.dialog.saveFile(save.filePath, new Uint8Array(bytes));
     } else {
-      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer as ArrayBuffer])); const link = document.createElement('a'); link.href = url; link.download = `Relatorio-${company}-${year}-${month}.xlsx`; link.click(); URL.revokeObjectURL(url);
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer as ArrayBuffer]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = defaultPath;
+      link.click();
+      URL.revokeObjectURL(url);
     }
-    setNotice('Planilha exportada com as abas Faltas e Sobras.');
+    setNotice('Planilha exportada com sucesso.');
+  }
+
+  async function parseAndPreviewFile(file: File) {
+    setBusy(true);
+    setError('');
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array' });
+
+      // Localiza exclusivamente a aba "Lançamentos" (insensível a maiúsculas e acentos)
+      const targetSheetName = workbook.SheetNames.find((name) => {
+        const normalized = name.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+        return normalized === 'lancamentos';
+      });
+
+      if (!targetSheetName) {
+        setImportModal({
+          fileName: file.name,
+          validRows: [],
+          errors: ['A planilha selecionada não possui a aba "Lançamentos". O arquivo deve conter uma aba chamada "Lançamentos" com os dados a serem importados.'],
+          duplicates: [],
+        });
+        return;
+      }
+
+      const worksheet = workbook.Sheets[targetSheetName];
+      const rawRows = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1, defval: '' });
+
+      if (rawRows.length === 0) {
+        setImportModal({
+          fileName: file.name,
+          validRows: [],
+          errors: ['A aba "Lançamentos" está completamente vazia.'],
+          duplicates: [],
+        });
+        return;
+      }
+
+      const headerRow = rawRows[0] || [];
+      const normalizeCol = (str: any) => String(str || '').trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+      const colMap = new Map<string, number>();
+      headerRow.forEach((h: any, idx: number) => {
+        colMap.set(normalizeCol(h), idx);
+      });
+
+      const findCol = (...names: string[]) => {
+        for (const name of names) {
+          const idx = colMap.get(normalizeCol(name));
+          if (idx !== undefined) return idx;
+        }
+        return -1;
+      };
+
+      const lotIdx = findCol('loterica');
+      const anoIdx = findCol('ano');
+      const mesIdx = findCol('mes');
+      const catIdx = findCol('categoria', 'tipo');
+      const diaIdx = findCol('dia');
+      const cliIdx = findCol('cliente');
+      const descIdx = findCol('descricao', 'observacao', 'observacoes');
+      const funcIdx = findCol('funcionaria', 'funcionario');
+      const valIdx = findCol('valor');
+      const confIdx = findCol('conferido', 'status');
+
+      const missingCols: string[] = [];
+      if (lotIdx === -1) missingCols.push('Loterica');
+      if (anoIdx === -1) missingCols.push('Ano');
+      if (mesIdx === -1) missingCols.push('Mes');
+      if (catIdx === -1) missingCols.push('Categoria');
+      if (diaIdx === -1) missingCols.push('Dia');
+      if (valIdx === -1) missingCols.push('Valor');
+      if (confIdx === -1) missingCols.push('Conferido');
+
+      if (missingCols.length > 0) {
+        setImportModal({
+          fileName: file.name,
+          validRows: [],
+          errors: [`Cabeçalho inválido na aba "Lançamentos". Colunas obrigatórias ausentes: ${missingCols.join(', ')}.`],
+          duplicates: [],
+        });
+        return;
+      }
+
+      const errors: string[] = [];
+      const validRows: Array<{
+        lineNum: number;
+        loterica: string;
+        ano: number;
+        mes: number;
+        dia: number;
+        tipo: 'falta' | 'sobra';
+        data_formatada: string;
+        valor: number;
+        funcionario: string;
+        cliente: string;
+        observacoes: string;
+        status: 'conferido' | 'pendente';
+      }> = [];
+
+      for (let i = 1; i < rawRows.length; i++) {
+        const row = rawRows[i];
+        if (!row || row.every((c: any) => String(c || '').trim() === '')) {
+          continue; // ignora linhas em branco
+        }
+        const lineNum = i + 1;
+
+        // 1. Lotérica
+        const rawLot = String(row[lotIdx] || '').trim();
+        const normLot = rawLot.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+        let matchedLot: string | null = null;
+        if (normLot === 'CACULA' || normLot === 'CAÇULA') matchedLot = 'CAÇULA';
+        else if (normLot === 'SORTE GRANDE') matchedLot = 'SORTE GRANDE';
+        else if (normLot === 'PUPINS') matchedLot = 'PUPINS';
+        else {
+          errors.push(`Linha ${lineNum}: Lotérica "${rawLot}" não reconhecida. As lotéricas aceitas são: CAÇULA, SORTE GRANDE ou PUPINS.`);
+        }
+
+        // 2. Ano
+        const anoNum = Number(row[anoIdx]);
+        if (!Number.isInteger(anoNum) || anoNum < 1900 || anoNum > 2100) {
+          errors.push(`Linha ${lineNum}: Ano "${row[anoIdx]}" inválido. Deve ser um ano com 4 dígitos (ex: 2026).`);
+        }
+
+        // 3. Mês
+        const mesNum = Number(row[mesIdx]);
+        if (!Number.isInteger(mesNum) || mesNum < 1 || mesNum > 12) {
+          errors.push(`Linha ${lineNum}: Mês "${row[mesIdx]}" inválido. Deve ser um número entre 1 e 12.`);
+        }
+
+        // 4. Categoria
+        const rawCat = String(row[catIdx] || '').trim().toUpperCase();
+        let matchedTipo: 'falta' | 'sobra' | null = null;
+        if (rawCat === 'FALTANDO' || rawCat === 'FALTA') matchedTipo = 'falta';
+        else if (rawCat === 'SOBRANDO' || rawCat === 'SOBRA') matchedTipo = 'sobra';
+        else {
+          errors.push(`Linha ${lineNum}: Categoria "${rawCat}" inválida. Deve ser FALTANDO ou SOBRANDO.`);
+        }
+
+        // 5. Dia
+        const diaNum = Number(row[diaIdx]);
+        const validYearMonth = Number.isInteger(anoNum) && anoNum >= 1900 && anoNum <= 2100 && Number.isInteger(mesNum) && mesNum >= 1 && mesNum <= 12;
+        const maxDays = validYearMonth ? daysInMonth(anoNum, mesNum) : 31;
+        if (!Number.isInteger(diaNum) || diaNum < 1 || diaNum > maxDays) {
+          errors.push(`Linha ${lineNum}: Dia "${row[diaIdx]}" inválido para o mês ${mesNum || 'informado'}/${anoNum || 'informado'} (aceita de 1 a ${maxDays}).`);
+        }
+
+        // 6. Valor
+        const rawVal = row[valIdx];
+        let cents = 0;
+        if (typeof rawVal === 'number') {
+          cents = Math.round(rawVal * 100);
+        } else {
+          cents = amountCents(String(rawVal || ''));
+        }
+        if (!Number.isSafeInteger(cents) || cents <= 0) {
+          errors.push(`Linha ${lineNum}: Valor "${rawVal}" inválido. Deve ser um valor numérico maior que zero.`);
+        }
+
+        // 7. Conferido
+        const rawConf = row[confIdx];
+        let isConferido: boolean | null = null;
+        if (typeof rawConf === 'boolean') {
+          isConferido = rawConf;
+        } else {
+          const strConf = String(rawConf ?? '').trim().toUpperCase();
+          if (strConf === 'TRUE' || strConf === 'VERDADEIRO' || strConf === 'SIM' || strConf === '1') isConferido = true;
+          else if (strConf === 'FALSE' || strConf === 'FALSO' || strConf === 'NAO' || strConf === 'NÃO' || strConf === '0' || strConf === '') isConferido = false;
+          else {
+            errors.push(`Linha ${lineNum}: Campo Conferido "${rawConf}" inválido. Utilize TRUE ou FALSE.`);
+          }
+        }
+
+        // 8. Descrição principal (cliente no DB) e campos opcionais
+        // O campo Descricao na planilha preenche 'cliente' no banco (exibido como DESCRIÇÃO na tabela).
+        // Se a planilha contiver ambas as colunas (ex: legada com Cliente e Descricao), preserva ambas harmoniosamente sem perda.
+        // Observações internas não são confundidas com a descrição nem preenchidas automaticamente por ela.
+        const rawDesc = descIdx !== -1 ? String(row[descIdx] || '').trim() : '';
+        const rawCli = cliIdx !== -1 ? String(row[cliIdx] || '').trim() : '';
+        let cliente = '';
+
+        if (descIdx !== -1 && cliIdx !== -1) {
+          if (rawCli && rawDesc && rawCli !== rawDesc) {
+            cliente = `${rawCli} - ${rawDesc}`;
+          } else {
+            cliente = rawDesc || rawCli;
+          }
+        } else if (descIdx !== -1) {
+          cliente = rawDesc;
+        } else if (cliIdx !== -1) {
+          cliente = rawCli;
+        }
+
+        const funcionario = funcIdx !== -1 ? String(row[funcIdx] || '').trim() : '';
+        const observacoes = '';
+
+        if (matchedLot && validYearMonth && matchedTipo && Number.isInteger(diaNum) && diaNum >= 1 && diaNum <= maxDays && cents > 0 && isConferido !== null) {
+          validRows.push({
+            lineNum,
+            loterica: matchedLot,
+            ano: anoNum,
+            mes: mesNum,
+            dia: diaNum,
+            tipo: matchedTipo,
+            data_formatada: dateString(anoNum, mesNum, diaNum),
+            valor: cents / 100,
+            funcionario,
+            cliente,
+            observacoes,
+            status: isConferido ? 'conferido' : 'pendente',
+          });
+        }
+      }
+
+      if (validRows.length === 0 && errors.length === 0) {
+        errors.push('Nenhum registro com dados encontrado na aba "Lançamentos".');
+      }
+
+      // Detecção de duplicações na planilha e no banco de dados
+      // Regra: Não exibir avisos de duplicação entre linhas da própria planilha baseados apenas na igualdade de campos.
+      // Em lotéricas, valores iguais no mesmo dia (ex: 89 lançamentos de R$ 15,00 no dia 21, ou R$ 20,00) são lançamentos legítimos.
+      // Também não classificamos como duplicados em relação ao banco existente sem um identificador confiável.
+      // Todas as linhas válidas da planilha são preservadas individualmente.
+      const duplicates: { lineNum: number; details: string }[] = [];
+
+      setImportModal({
+        fileName: file.name,
+        validRows,
+        errors,
+        duplicates,
+      });
+    } catch (reason: any) {
+      setError(`Erro ao ler o arquivo Excel: ${reason?.message || String(reason)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleImportFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    event.target.value = '';
+    await parseAndPreviewFile(file);
+  }
+
+  async function executeImport() {
+    if (!importModal || !api || importModal.validRows.length === 0) return;
+    setImporting(true);
+    setError('');
+    try {
+      for (const row of importModal.validRows) {
+        await api.addLancamento({
+          loterica: row.loterica,
+          ano: row.ano,
+          mes: row.mes,
+          dia: row.dia,
+          data_formatada: row.data_formatada,
+          valor: row.valor,
+          tipo: row.tipo,
+          funcionario: row.funcionario,
+          cliente: row.cliente,
+          observacoes: row.observacoes,
+          status: row.status,
+        });
+      }
+      const count = importModal.validRows.length;
+      setImportModal(null);
+      await refreshData(false);
+      await refreshSync();
+      setNotice(`${count} lançamento(s) importado(s) com sucesso no Relatório.`);
+    } catch (reason: any) {
+      setError(`Erro durante a gravação dos lançamentos: ${reason?.message || String(reason)}`);
+    } finally {
+      setImporting(false);
+    }
   }
 
   function showBulkPreview(scope: 'day' | 'month' | 'filter') {
@@ -453,8 +868,8 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
       <div className="rp-content">
         {section !== 'historico' && <>
           {loading ? <div className="rp-loading"><span className="rp-spinner" />Carregando lançamentos…</div> : <div className="rp-ledgers">
-            <Ledger title="PIX FALTANDO" kind="falta" entries={faltas} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onDelete={(row: any) => window.confirm('Excluir este lançamento? A exclusão será lógica e sincronizada.') && void action(() => api!.deleteLancamento(row.id), 'Lançamento removido.')} isActive={isActive} />
-            <Ledger title="PIX SOBRANDO" kind="sobra" entries={sobras} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onDelete={(row: any) => window.confirm('Excluir este lançamento? A exclusão será lógica e sincronizada.') && void action(() => api!.deleteLancamento(row.id), 'Lançamento removido.')} isActive={isActive} />
+            <Ledger title="PIX FALTANDO" kind="falta" entries={faltas} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onDelete={handleDelete} isActive={isActive} />
+            <Ledger title="PIX SOBRANDO" kind="sobra" entries={sobras} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onDelete={handleDelete} isActive={isActive} />
           </div>}
         </>}
 
@@ -476,9 +891,19 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
             <div className="rp-report-tools-actions"><button type="button" className="rp-button rp-button-outline" onClick={() => setSection('historico')}><Clock3 size={14} /> Abrir Histórico de Versões</button></div>
           </section>
           <section className="rp-sync-card rp-report-tools">
-            <div className="rp-settings-card-heading export"><Download size={15} /><strong>EXPORTAÇÃO DE PLANILHA</strong></div>
-            <p className="rp-settings-description">Gere um arquivo de planilha no formato Excel (.xlsx) com todos os lançamentos de PIX Faltando e PIX Sobrando da lotérica e mês selecionados.</p>
-            <div className="rp-report-tools-actions"><button type="button" className="rp-button rp-button-outline export-action" onClick={() => void exportReport()}><Download size={14} /> Exportar para Excel (.xlsx)</button></div>
+            <div className="rp-settings-card-heading export"><Download size={15} /><strong>IMPORTAÇÃO E EXPORTAÇÃO DE PLANILHAS</strong></div>
+            <p className="rp-settings-description">Exporte os lançamentos para Excel ou importe registros de uma planilha padronizada, preenchendo automaticamente os dados do Relatório.</p>
+            <div className="rp-report-tools-actions">
+              <button type="button" className="rp-button rp-button-outline export-action" onClick={() => void exportReport()}><Download size={14} /> Exportar para Excel (.xlsx)</button>
+              <button type="button" className="rp-button rp-button-outline import-action" onClick={() => importFileInputRef.current?.click()}><Upload size={14} /> Importar do Excel (.xlsx)</button>
+            </div>
+            <input
+              ref={importFileInputRef}
+              type="file"
+              accept=".xlsx"
+              style={{ display: 'none' }}
+              onChange={(event) => void handleImportFileChange(event)}
+            />
           </section>
           <div className="lc-setting-row">
             <div className="lc-setting-icon"><Clock3 size={17} /></div>
@@ -564,16 +989,160 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
         </div>
         <footer><button type="button" className="rp-button rp-button-outline" onClick={() => setBulk(null)}>Cancelar</button><button type="button" className="rp-button rp-button-danger" disabled={busy || bulk.loadingPreview || !bulk.preview?.count} onClick={() => void runBulkDelete()}><Trash2 size={14} />{busy ? 'Excluindo…' : 'Confirmar Exclusão em Massa'}</button></footer>
       </section></div>}
+
+      {importModal && (
+        <div
+          className="rp-overlay rp-import-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !importing) setImportModal(null);
+          }}
+        >
+          <section
+            className="rp-entry-modal rp-import-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rp-import-title"
+          >
+            <header>
+              <div>
+                <p className="rp-eyebrow">IMPORTAÇÃO DE PLANILHA</p>
+                <h2 id="rp-import-title">Importar lançamentos do Excel</h2>
+                <span>Arquivo: <strong>{importModal.fileName}</strong></span>
+              </div>
+              <button
+                type="button"
+                className="rp-icon-button"
+                disabled={importing}
+                onClick={() => setImportModal(null)}
+                aria-label="Fechar prévia de importação"
+              >
+                <X size={16} />
+              </button>
+            </header>
+
+            <div className="rp-import-body">
+              {importModal.errors.length > 0 && (
+                <div className="rp-import-alert rp-import-alert-danger">
+                  <div className="rp-import-alert-header">
+                    <AlertTriangle size={16} />
+                    <strong>{importModal.errors.length} erro(s) impeditivo(s) encontrado(s)</strong>
+                  </div>
+                  <p>
+                    A planilha contém dados inválidos ou incompatíveis. Nenhum registro será importado até que todos os erros sejam corrigidos no arquivo Excel.
+                  </p>
+                  <ul className="rp-import-list rp-import-error-list">
+                    {importModal.errors.map((err, idx) => (
+                      <li key={idx}>{err}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {importModal.errors.length === 0 && (
+                <>
+                  <div className="rp-import-stats">
+                    <div className="rp-import-stat-card">
+                      <span>Total de lançamentos</span>
+                      <strong>{importModal.validRows.length}</strong>
+                    </div>
+                    <div className="rp-import-stat-card">
+                      <span>Valor total</span>
+                      <strong className="total">
+                        {brl.format(importModal.validRows.reduce((sum, r) => sum + r.valor, 0))}
+                      </strong>
+                    </div>
+                    <div className="rp-import-stat-card">
+                      <span>PIX Faltando</span>
+                      <strong>
+                        {importModal.validRows.filter((r) => r.tipo === 'falta').length} (
+                        {brl.format(
+                          importModal.validRows
+                            .filter((r) => r.tipo === 'falta')
+                            .reduce((sum, r) => sum + r.valor, 0)
+                        )}
+                        )
+                      </strong>
+                    </div>
+                    <div className="rp-import-stat-card">
+                      <span>PIX Sobrando</span>
+                      <strong>
+                        {importModal.validRows.filter((r) => r.tipo === 'sobra').length} (
+                        {brl.format(
+                          importModal.validRows
+                            .filter((r) => r.tipo === 'sobra')
+                            .reduce((sum, r) => sum + r.valor, 0)
+                        )}
+                        )
+                      </strong>
+                    </div>
+                  </div>
+
+                  {importModal.duplicates.length > 0 && (
+                    <div className="rp-import-alert rp-import-alert-warning">
+                      <div className="rp-import-alert-header">
+                        <AlertTriangle size={16} />
+                        <strong>Atenção: {importModal.duplicates.length} possível(is) duplicação(ões) identificada(s)</strong>
+                      </div>
+                      <p>
+                        Os registros abaixo coincidem com lançamentos já cadastrados no sistema ou repetidos na planilha. Eles serão importados caso você confirme.
+                      </p>
+                      <ul className="rp-import-list rp-import-warning-list">
+                        {importModal.duplicates.map((dup, idx) => (
+                          <li key={idx}>
+                            <span>Linha {dup.lineNum}:</span> {dup.details}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="rp-import-info-box">
+                    <strong>Informações da importação:</strong>
+                    <span>
+                      • Os lançamentos serão distribuídos automaticamente nas respectivas lotéricas ({Array.from(new Set(importModal.validRows.map((r) => r.loterica))).join(', ')}), anos e meses informados.
+                    </span>
+                    <span>
+                      • A persistência utiliza o mecanismo oficial do Relatório e enfileira a sincronização com o Google Drive.
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <footer>
+              <button
+                type="button"
+                className="rp-button rp-button-outline"
+                disabled={importing}
+                onClick={() => setImportModal(null)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="rp-button rp-button-primary lc-shared-action lc-shared-action-primary"
+                disabled={importing || importModal.errors.length > 0 || importModal.validRows.length === 0}
+                onClick={() => void executeImport()}
+              >
+                {importing
+                  ? 'Importando…'
+                  : `Confirmar Importação (${importModal.validRows.length} ${importModal.validRows.length === 1 ? 'lançamento' : 'lançamentos'})`}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
     </section>
   );
 }
 
-export function Ledger({ title, kind, entries, onEdit, onInlineSave, onToggleStatus, onDelete, isActive = true }: any) {
+export const Ledger = React.memo(function Ledger({ title, kind, entries, onEdit, onInlineSave, onToggleStatus, onDelete, isActive = true }: any) {
   const [editingCell, setEditingCell] = useState<{ id: string; field: 'valor' | 'cliente' | 'funcionario' } | null>(null);
   const [cellDraft, setCellDraft] = useState('');
   const savingCell = useRef(false);
   const activeCell = useRef<{ id: string; field: 'valor' | 'cliente' | 'funcionario' } | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ row: any; x: number; y: number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ row: any; isMulti: boolean; targetRows: any[]; x: number; y: number } | null>(null);
+  const [deleteModal, setDeleteModal] = useState<{ rows: any[] } | null>(null);
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
@@ -583,15 +1152,92 @@ export function Ledger({ title, kind, entries, onEdit, onInlineSave, onToggleSta
     window.addEventListener('keydown', keydown);
     return () => { window.removeEventListener('click', close); window.removeEventListener('scroll', close, true); window.removeEventListener('keydown', keydown); };
   }, [contextMenu]);
+
+  useEffect(() => {
+    if (!deleteModal) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setDeleteModal(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [deleteModal]);
+
+  const totalSum = useMemo(() => {
+    let sum = 0;
+    for (let i = 0; i < entries.length; i++) {
+      sum += Number(entries[i].valor || 0);
+    }
+    return sum;
+  }, [entries]);
+
   const groupedEntries = useMemo(() => {
     const groups = new Map<number, any[]>();
-    entries.forEach((entry: any) => { const day = Number(entry.dia) || 0; groups.set(day, [...(groups.get(day) || []), entry]); });
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const day = Number(entry.dia) || 0;
+      let list = groups.get(day);
+      if (!list) {
+        list = [];
+        groups.set(day, list);
+      }
+      list.push(entry);
+    }
     return [...groups.entries()].sort(([left], [right]) => left - right);
   }, [entries]);
 
   const displayedRows = useMemo(() => {
-    return groupedEntries.flatMap(([_, dayEntries]) => dayEntries);
+    const rows: any[] = [];
+    for (let g = 0; g < groupedEntries.length; g++) {
+      const dayEntries = groupedEntries[g][1];
+      for (let i = 0; i < dayEntries.length; i++) {
+        rows.push(dayEntries[i]);
+      }
+    }
+    return rows;
   }, [groupedEntries]);
+
+  type LedgerDisplayRow =
+    | { type: 'day-group'; day: number; subtotal: number; key: string }
+    | { type: 'day-head'; day: number; key: string }
+    | { type: 'entry'; entry: any; key: string };
+
+  const displayItems = useMemo<LedgerDisplayRow[]>(() => {
+    const items: LedgerDisplayRow[] = [];
+    for (let g = 0; g < groupedEntries.length; g++) {
+      const [day, dayEntries] = groupedEntries[g];
+      let subtotal = 0;
+      for (let i = 0; i < dayEntries.length; i++) {
+        subtotal += Number(dayEntries[i].valor || 0);
+      }
+      items.push({ type: 'day-group', day, subtotal, key: `group-${day}` });
+      items.push({ type: 'day-head', day, key: `head-${day}` });
+      for (let i = 0; i < dayEntries.length; i++) {
+        items.push({ type: 'entry', entry: dayEntries[i], key: String(dayEntries[i].id) });
+      }
+    }
+    return items;
+  }, [groupedEntries]);
+
+  const getItemHeight = useCallback((item: LedgerDisplayRow) => {
+    if (item.type === 'day-group') return 38;
+    if (item.type === 'day-head') return 32;
+    return 44;
+  }, []);
+
+  const {
+    containerRef,
+    visibleItems,
+    topSpacerHeight,
+    bottomSpacerHeight,
+  } = useRelatorioVirtualTable<LedgerDisplayRow>({
+    items: displayItems,
+    getItemHeight,
+    overscanPx: 350,
+    minItemsToVirtualize: 35,
+  });
 
   const {
     selectedIds,
@@ -701,44 +1347,115 @@ export function Ledger({ title, kind, entries, onEdit, onInlineSave, onToggleSta
   }
 
   return <section className={`rp-ledger ${kind}`}>
-    <header><div className="rp-ledger-heading"><div><span className="rp-ledger-mark" /><h2>{title}</h2></div><p>{kind === 'falta' ? 'Diferenças não localizadas no caixa / pendências' : 'Valores a mais recebidos no PIX / sem comprovante'}</p></div><div className="rp-ledger-total"><span>{kind === 'falta' ? 'Total faltando' : 'Total sobrando'}</span><strong>{brl.format(entries.reduce((sum: number, row: any) => sum + Number(row.valor || 0), 0))}</strong></div></header>
-    <div className="rp-ledger-scroll"><table><colgroup><col className="rp-col-value" /><col className="rp-col-description" /><col className="rp-col-employee" /><col className="rp-col-action" /></colgroup><tbody>{groupedEntries.map(([day, dayEntries]) => <React.Fragment key={day}>
-      <tr className="rp-day-group"><td colSpan={4}><div><span>🗓️ DIA {String(day).padStart(2, '0')}</span><small>SUBTOTAL: <strong>{brl.format(dayEntries.reduce((sum: number, row: any) => sum + Number(row.valor || 0), 0))}</strong></small></div></td></tr>
-      <tr className="rp-group-head"><th>VALOR</th><th>DESCRIÇÃO</th><th>FUNCIONÁRIO</th><th aria-label="Conferência"></th></tr>
-      {dayEntries.map((row: any) => {
-        const isChecked = row.status === 'conferido';
-        const isSelected = selectedIds.has(String(row.id));
-        return <tr key={row.id} id={`report-row-${row.id}`} className={`${isChecked ? 'is-conferido' : ''} ${isSelected ? 'is-selected' : ''}`.trim() || undefined} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ row, x: Math.min(event.clientX, window.innerWidth - 210), y: Math.min(event.clientY, window.innerHeight - 190) }); }} title="Clique com o botão direito para ver as ações">
-        {renderEditableCell(row, 'valor', 'Valor', brl.format(row.valor))}
-        {renderEditableCell(row, 'cliente', 'Descrição', row.cliente || '—')}
-        {renderEditableCell(row, 'funcionario', 'Funcionário', row.funcionario || '—')}
-        <td
-          className={`rp-check-cell ${isSelected ? 'is-selected' : ''}`}
-          onClick={(e) => {
-            if ((e.target as HTMLElement).tagName.toLowerCase() !== 'input') {
-              e.preventDefault();
-              handleRowClick(e, row.id);
+    <header><div className="rp-ledger-heading"><div><span className="rp-ledger-mark" /><h2>{title}</h2></div><p>{kind === 'falta' ? 'Diferenças não localizadas no caixa / pendências' : 'Valores a mais recebidos no PIX / sem comprovante'}</p></div><div className="rp-ledger-total"><span>{kind === 'falta' ? 'Total faltando' : 'Total sobrando'}</span><strong>{brl.format(totalSum)}</strong></div></header>
+    <div className="rp-ledger-scroll" ref={containerRef}>
+      <table>
+        <colgroup>
+          <col className="rp-col-value" />
+          <col className="rp-col-description" />
+          <col className="rp-col-employee" />
+          <col className="rp-col-action" />
+        </colgroup>
+        <tbody>
+          {topSpacerHeight > 0 && (
+            <tr
+              key="rp-top-spacer"
+              aria-hidden="true"
+              style={{ height: `${topSpacerHeight}px`, padding: 0, border: 0, margin: 0, lineHeight: 0, fontSize: 0 }}
+            >
+              <td colSpan={4} style={{ height: `${topSpacerHeight}px`, padding: 0, border: 0, margin: 0, lineHeight: 0, fontSize: 0 }} />
+            </tr>
+          )}
+          {visibleItems.map((item) => {
+            if (item.type === 'day-group') {
+              return (
+                <tr key={item.key} className="rp-day-group">
+                  <td colSpan={4}>
+                    <div>
+                      <span>🗓️ DIA {String(item.day).padStart(2, '0')}</span>
+                      <small>SUBTOTAL: <strong>{brl.format(item.subtotal)}</strong></small>
+                    </div>
+                  </td>
+                </tr>
+              );
             }
-          }}
-          title="Clique fora da caixa para selecionar com Ctrl / Shift"
-        >
-          <div
-            className="rp-check-action"
-            title={isChecked ? 'Desmarcar conferência' : 'Marcar como conferido'}
-          >
-            <input
-              type="checkbox"
-              checked={isChecked}
-              onClick={(e) => {
-                e.stopPropagation();
-              }}
-              onChange={() => void onToggleStatus?.(row)}
-              aria-label={isChecked ? 'Reabrir lançamento' : 'Marcar como conferido'}
-            />
-          </div>
-        </td>
-      </tr>;
-    })}</React.Fragment>)}</tbody></table>
+            if (item.type === 'day-head') {
+              return (
+                <tr key={item.key} className="rp-group-head">
+                  <th>VALOR</th>
+                  <th>DESCRIÇÃO</th>
+                  <th>FUNCIONÁRIO</th>
+                  <th aria-label="Conferência"></th>
+                </tr>
+              );
+            }
+            const row = item.entry;
+            const isChecked = row.status === 'conferido';
+            const isSelected = selectedIds.has(String(row.id));
+            return (
+              <tr
+                key={row.id}
+                id={`report-row-${row.id}`}
+                className={`${isChecked ? 'is-conferido' : ''} ${isSelected ? 'is-selected' : ''}`.trim() || undefined}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  const isSel = selectedIds.has(String(row.id));
+                  const isMulti = isSel && selectedIds.size > 1;
+                  const targetRows = isMulti
+                    ? displayedRows.filter((r: any) => selectedIds.has(String(r.id)))
+                    : [row];
+                  setContextMenu({
+                    row,
+                    isMulti,
+                    targetRows,
+                    x: Math.min(event.clientX, window.innerWidth - 210),
+                    y: Math.min(event.clientY, window.innerHeight - 190),
+                  });
+                }}
+                title="Clique com o botão direito para ver as ações"
+              >
+                {renderEditableCell(row, 'valor', 'Valor', brl.format(row.valor))}
+                {renderEditableCell(row, 'cliente', 'Descrição', row.cliente || '—')}
+                {renderEditableCell(row, 'funcionario', 'Funcionário', row.funcionario || '—')}
+                <td
+                  className={`rp-check-cell ${isSelected ? 'is-selected' : ''}`}
+                  onClick={(e) => {
+                    if ((e.target as HTMLElement).tagName.toLowerCase() !== 'input') {
+                      e.preventDefault();
+                      handleRowClick(e, row.id);
+                    }
+                  }}
+                  title="Clique fora da caixa para selecionar com Ctrl / Shift"
+                >
+                  <div
+                    className="rp-check-action"
+                    title={isChecked ? 'Desmarcar conferência' : 'Marcar como conferido'}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                      }}
+                      onChange={() => void onToggleStatus?.(row)}
+                      aria-label={isChecked ? 'Reabrir lançamento' : 'Marcar como conferido'}
+                    />
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+          {bottomSpacerHeight > 0 && (
+            <tr
+              key="rp-bottom-spacer"
+              aria-hidden="true"
+              style={{ height: `${bottomSpacerHeight}px`, padding: 0, border: 0, margin: 0, lineHeight: 0, fontSize: 0 }}
+            >
+              <td colSpan={4} style={{ height: `${bottomSpacerHeight}px`, padding: 0, border: 0, margin: 0, lineHeight: 0, fontSize: 0 }} />
+            </tr>
+          )}
+        </tbody>
+      </table>
       {!entries.length && <div className="rp-empty">Nenhum lançamento {kind === 'falta' ? 'faltando' : 'sobrando'} neste filtro.</div>}
     </div>
     {summary && summary.count > 0 && (
@@ -767,6 +1484,98 @@ export function Ledger({ title, kind, entries, onEdit, onInlineSave, onToggleSta
         </button>
       </footer>
     )}
-    {contextMenu && <div className="rp-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} role="menu" onClick={(event) => event.stopPropagation()}><strong>{brl.format(contextMenu.row.valor)} · Dia {String(contextMenu.row.dia).padStart(2, '0')}</strong><button type="button" onClick={() => { setContextMenu(null); onEdit(contextMenu.row); }}>Editar lançamento</button><button type="button" className="danger" onClick={() => { setContextMenu(null); onDelete(contextMenu.row); }}>Excluir lançamento</button></div>}
+    {contextMenu && (
+      <div
+        className="rp-context-menu"
+        style={{ left: contextMenu.x, top: contextMenu.y }}
+        role="menu"
+        onClick={(event) => event.stopPropagation()}
+      >
+        {contextMenu.isMulti ? (
+          <strong>{contextMenu.targetRows.length} lançamentos selecionados</strong>
+        ) : (
+          <strong>{brl.format(contextMenu.row.valor)} · Dia {String(contextMenu.row.dia).padStart(2, '0')}</strong>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            setContextMenu(null);
+            onEdit(contextMenu.row);
+          }}
+        >
+          Editar lançamento
+        </button>
+        <button
+          type="button"
+          className="danger"
+          onClick={() => {
+            const rows = contextMenu.targetRows;
+            setContextMenu(null);
+            setDeleteModal({ rows });
+          }}
+        >
+          {contextMenu.isMulti ? `Excluir ${contextMenu.targetRows.length} lançamentos selecionados` : 'Excluir lançamento'}
+        </button>
+      </div>
+    )}
+
+    {deleteModal && (
+      <div
+        className="rp-overlay rp-delete-confirm-overlay"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setDeleteModal(null);
+        }}
+      >
+        <div
+          className="rp-entry-modal rp-confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={`rp-delete-dialog-${kind}`}
+        >
+          <header>
+            <div>
+              <p className="rp-eyebrow">CONFIRMAÇÃO</p>
+              <h2 id={`rp-delete-dialog-${kind}`}>Confirmar exclusão</h2>
+            </div>
+            <button
+              type="button"
+              className="rp-icon-button"
+              onClick={() => setDeleteModal(null)}
+              aria-label="Fechar"
+            >
+              <X size={16} />
+            </button>
+          </header>
+          <div className="rp-delete-body">
+            <p>
+              {deleteModal.rows.length === 1
+                ? 'Excluir este lançamento? A exclusão será lógica e sincronizada.'
+                : `Excluir estes ${deleteModal.rows.length} lançamentos? A exclusão será lógica e sincronizada.`}
+            </p>
+          </div>
+          <footer>
+            <button
+              type="button"
+              className="rp-button rp-button-outline"
+              onClick={() => setDeleteModal(null)}
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              className="rp-button rp-button-danger"
+              onClick={async () => {
+                const rowsToDelete = deleteModal.rows;
+                setDeleteModal(null);
+                await onDelete(rowsToDelete);
+                clearSelection();
+              }}
+            >
+              {deleteModal.rows.length === 1 ? 'Excluir lançamento' : 'Excluir lançamentos'}
+            </button>
+          </footer>
+        </div>
+      </div>
+    )}
   </section>;
-}
+});
