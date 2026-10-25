@@ -474,30 +474,38 @@
   background-color: #bbf7d0 !important;
 }
 
-/* Selected Row Highlight (Spreadsheet Multi-Selection) */
+/* Selected Row Highlight (Lançamentos NÃO CONFERIDOS selecionados -> Amarelo-claro) */
 .rp-ledger tbody tr.is-selected td {
-  background-color: #e0f2fe !important;
-  border-bottom-color: #bae6fd !important;
-  border-right-color: #bae6fd !important;
+  background-color: #fef3c7 !important;
+  border-bottom-color: #fde68a !important;
+  border-right-color: #fde68a !important;
+  color: #0f172a;
 }
 .rp-ledger tbody tr.is-selected td:first-child {
-  border-left: 3px solid #0284c7;
+  border-left: 3px solid #d97706;
 }
 .rp-ledger tbody tr.is-selected td:last-child {
   border-right: 0 !important;
 }
 .rp-ledger tbody tr.is-selected:hover td {
-  background-color: #bae6fd !important;
+  background-color: #fde68a !important;
 }
 
-/* Row is both conferido AND selected */
+/* Selected Row Highlight (Lançamentos CONFERIDOS selecionados -> Azul-claro) */
 .rp-ledger tbody tr.is-conferido.is-selected td {
-  background-color: #d1fae5 !important;
-  border-bottom-color: #6ee7b7 !important;
-  border-right-color: #a7f3d0 !important;
+  background-color: #e0f2fe !important;
+  border-bottom-color: #bae6fd !important;
+  border-right-color: #bae6fd !important;
+  color: #0f172a;
 }
 .rp-ledger tbody tr.is-conferido.is-selected td:first-child {
-  border-left: 3px solid #059669;
+  border-left: 3px solid #0284c7;
+}
+.rp-ledger tbody tr.is-conferido.is-selected td:last-child {
+  border-right: 0 !important;
+}
+.rp-ledger tbody tr.is-conferido.is-selected:hover td {
+  background-color: #bae6fd !important;
 }
 
 /* Checkbox cell interaction area */

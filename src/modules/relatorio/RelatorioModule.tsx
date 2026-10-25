@@ -286,6 +286,19 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
     await action(() => api.toggleStatus(row.id, status, row.observacoes || ''));
   }, [api, action]);
 
+  const handleMarkAsConferido = useCallback(async (target: any | any[]) => {
+    const items = Array.isArray(target) ? target : [target];
+    if (!api || items.length === 0) return;
+    const pendingItems = items.filter((item) => item.status !== 'conferido');
+    if (pendingItems.length === 0) return;
+    const count = pendingItems.length;
+    await action(async () => {
+      for (const item of pendingItems) {
+        await api.toggleStatus(item.id, 'conferido', item.observacoes || '');
+      }
+    }, count === 1 ? 'Lançamento marcado como conferido.' : `${count} lançamentos marcados como conferidos.`);
+  }, [api, action]);
+
   const handleDelete = useCallback(async (target: any | any[]) => {
     const items = Array.isArray(target) ? target : [target];
     if (!api || items.length === 0) return;
@@ -868,8 +881,8 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
       <div className="rp-content">
         {section !== 'historico' && <>
           {loading ? <div className="rp-loading"><span className="rp-spinner" />Carregando lançamentos…</div> : <div className="rp-ledgers">
-            <Ledger title="PIX FALTANDO" kind="falta" entries={faltas} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onDelete={handleDelete} isActive={isActive} />
-            <Ledger title="PIX SOBRANDO" kind="sobra" entries={sobras} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onDelete={handleDelete} isActive={isActive} />
+            <Ledger title="PIX FALTANDO" kind="falta" entries={faltas} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onMarkAsConferido={handleMarkAsConferido} onDelete={handleDelete} isActive={isActive} />
+            <Ledger title="PIX SOBRANDO" kind="sobra" entries={sobras} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onMarkAsConferido={handleMarkAsConferido} onDelete={handleDelete} isActive={isActive} />
           </div>}
         </>}
 
@@ -1136,7 +1149,7 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
   );
 }
 
-export const Ledger = React.memo(function Ledger({ title, kind, entries, onEdit, onInlineSave, onToggleStatus, onDelete, isActive = true }: any) {
+export const Ledger = React.memo(function Ledger({ title, kind, entries, onEdit, onInlineSave, onToggleStatus, onMarkAsConferido, onDelete, isActive = true }: any) {
   const [editingCell, setEditingCell] = useState<{ id: string; field: 'valor' | 'cliente' | 'funcionario' } | null>(null);
   const [cellDraft, setCellDraft] = useState('');
   const savingCell = useRef(false);
@@ -1484,40 +1497,100 @@ export const Ledger = React.memo(function Ledger({ title, kind, entries, onEdit,
         </button>
       </footer>
     )}
-    {contextMenu && (
-      <div
-        className="rp-context-menu"
-        style={{ left: contextMenu.x, top: contextMenu.y }}
-        role="menu"
-        onClick={(event) => event.stopPropagation()}
-      >
-        {contextMenu.isMulti ? (
-          <strong>{contextMenu.targetRows.length} lançamentos selecionados</strong>
-        ) : (
-          <strong>{brl.format(contextMenu.row.valor)} · Dia {String(contextMenu.row.dia).padStart(2, '0')}</strong>
-        )}
-        <button
-          type="button"
-          onClick={() => {
-            setContextMenu(null);
-            onEdit(contextMenu.row);
-          }}
+    {contextMenu && (() => {
+      const isMulti = contextMenu.isMulti;
+      const targetRows = contextMenu.targetRows;
+      const pendingRows = targetRows.filter((r: any) => r.status !== 'conferido');
+      const hasPending = pendingRows.length > 0;
+
+      return (
+        <div
+          className="rp-context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          role="menu"
+          onClick={(event) => event.stopPropagation()}
         >
-          Editar lançamento
-        </button>
-        <button
-          type="button"
-          className="danger"
-          onClick={() => {
-            const rows = contextMenu.targetRows;
-            setContextMenu(null);
-            setDeleteModal({ rows });
-          }}
-        >
-          {contextMenu.isMulti ? `Excluir ${contextMenu.targetRows.length} lançamentos selecionados` : 'Excluir lançamento'}
-        </button>
-      </div>
-    )}
+          {isMulti ? (
+            <strong>{targetRows.length} lançamentos selecionados</strong>
+          ) : (
+            <strong>{brl.format(contextMenu.row.valor)} · Dia {String(contextMenu.row.dia).padStart(2, '0')}</strong>
+          )}
+
+          {isMulti ? (
+            <>
+              {hasPending && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const rowsToMark = pendingRows;
+                    setContextMenu(null);
+                    if (onMarkAsConferido) {
+                      await onMarkAsConferido(rowsToMark);
+                    } else if (onToggleStatus) {
+                      for (const r of rowsToMark) {
+                        await onToggleStatus(r);
+                      }
+                    }
+                  }}
+                >
+                  Marcar como conferidos
+                </button>
+              )}
+              <button
+                type="button"
+                className="danger"
+                onClick={() => {
+                  const rows = targetRows;
+                  setContextMenu(null);
+                  setDeleteModal({ rows });
+                }}
+              >
+                Excluir {targetRows.length} lançamentos selecionados
+              </button>
+            </>
+          ) : (
+            <>
+              {contextMenu.row.status !== 'conferido' && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const row = contextMenu.row;
+                    setContextMenu(null);
+                    if (onMarkAsConferido) {
+                      await onMarkAsConferido([row]);
+                    } else if (onToggleStatus) {
+                      await onToggleStatus(row);
+                    }
+                  }}
+                >
+                  Marcar como conferido
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  onEdit(contextMenu.row);
+                }}
+              >
+                Editar lançamento
+              </button>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => {
+                  const rows = targetRows;
+                  setContextMenu(null);
+                  setDeleteModal({ rows });
+                }}
+              >
+                Excluir lançamento
+              </button>
+            </>
+          )}
+        </div>
+      );
+    })()}
 
     {deleteModal && (
       <div
