@@ -55,55 +55,12 @@
           <img
             id="showcase-img"
             src="assets/dashboard.png"
-            alt="Tela inicial de seleção de módulos do LoteControl"
+            alt="Visão Geral do LoteControl com painel de seleção dos módulos"
             class="showcase-image"
             width="2102"
             height="1310"
           />
         </div>
-      </div>
-
-      <div class="showcase-switcher" role="tablist" aria-label="Visualizar telas do aplicativo">
-        <button
-          type="button"
-          role="tab"
-          aria-selected="true"
-          class="switcher-btn active"
-          data-src="assets/dashboard.png"
-          data-alt="Tela inicial de seleção de módulos do LoteControl"
-        >
-          Visão Geral
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected="false"
-          class="switcher-btn"
-          data-src="assets/relatorio.png"
-          data-alt="Interface real do módulo Relatório no LoteControl exibindo o controle de Pix Faltando e Pix Sobrando"
-        >
-          Relatório Diário
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected="false"
-          class="switcher-btn"
-          data-src="assets/pix.png"
-          data-alt="Interface real do módulo Pix no LoteControl para importação e conferência de extratos da Caixa"
-        >
-          Conferência Pix
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected="false"
-          class="switcher-btn"
-          data-src="assets/protege.png"
-          data-alt="Interface real do módulo Protege no LoteControl para controle de cofres e recolhimentos"
-        >
-          Cofres Protege
-        </button>
       </div>
     </section>
 
@@ -161,29 +118,6 @@
 
   <script>
     (function () {
-      // 1. Seletor de capturas da demonstração
-      const img = document.getElementById('showcase-img');
-      const buttons = document.querySelectorAll('.switcher-btn');
-      buttons.forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          const nextSrc = btn.getAttribute('data-src');
-          const nextAlt = btn.getAttribute('data-alt');
-          if (!nextSrc || img.getAttribute('src') === nextSrc) return;
-          buttons.forEach(function (b) {
-            b.classList.remove('active');
-            b.setAttribute('aria-selected', 'false');
-          });
-          btn.classList.add('active');
-          btn.setAttribute('aria-selected', 'true');
-          img.style.opacity = '0.35';
-          setTimeout(function () {
-            img.setAttribute('src', nextSrc);
-            if (nextAlt) img.setAttribute('alt', nextAlt);
-            img.style.opacity = '1';
-          }, 110);
-        });
-      });
-
       // 2. Consulta dinâmica sem cache da última release publicada no GitHub
       const RELEASES_API = 'https://api.github.com/repos/guilhermetonin/LoteControl/releases/latest';
       const FALLBACK_RELEASES_URL = 'https://github.com/guilhermetonin/LoteControl/releases/latest';

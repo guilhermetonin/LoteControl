@@ -252,65 +252,6 @@ main {
   display: block;
   width: 100%;
   height: auto;
-  transition: opacity 0.2s ease;
-}
-
-.showcase-switcher {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 18px;
-}
-
-.switcher-btn {
-  appearance: none;
-  background: #ffffff;
-  border: 1px solid #c7d9ec;
-  color: #284d73;
-  font-family: inherit;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  padding: 7px 15px;
-  border-radius: 9999px;
-  cursor: pointer;
-  box-shadow: 0 1px 2px rgba(18, 56, 95, 0.04);
-  transition: all 0.15s ease;
-}
-
-.switcher-btn:hover {
-  color: var(--lc-navy);
-  background: #eff6ff;
-  border-color: #93c5fd;
-}
-
-.switcher-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--lc-blue-focus);
-}
-
-.switcher-btn.active {
-  color: #ffffff;
-  background: var(--lc-blue);
-  border-color: var(--lc-blue);
-  box-shadow: 0 2px 8px rgba(22, 89, 159, 0.22);
-}
-
-.switcher-btn.active:hover {
-  background: var(--lc-blue-hover);
-  border-color: var(--lc-blue-hover);
-}
-
-.switcher-btn.active::before {
-  content: "";
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background-color: #34d399;
-  margin-right: 7px;
-  vertical-align: middle;
 }
 
 /* ==========================================================================
