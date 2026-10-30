@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LoteControl</title>
+  <meta name="description" content="Reúna o controle do Pix, da Protege e o relatório diário em um só aplicativo, com sincronização pelo Google Drive." />
+  <link rel="canonical" href="https://guilhermetonin.github.io/LoteControl/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="LoteControl — Gestão e Conciliação para Casas Lotéricas" />
+  <meta property="og:description" content="Reúna o controle do Pix, da Protege e o relatório diário em um só aplicativo, com sincronização pelo Google Drive." />
+  <meta property="og:url" content="https://guilhermetonin.github.io/LoteControl/" />
+  <meta property="og:image" content="https://guilhermetonin.github.io/LoteControl/assets/dashboard.png" />
+  <link rel="icon" href="assets/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="assets/icon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <!-- 1. Cabeçalho discreto -->
+  <header class="site-header">
+    <div class="header-inner">
+      <a href="index.html" class="brand-link" aria-label="LoteControl — Página inicial">
+        <img src="assets/icon.png" alt="" class="brand-icon" width="24" height="24" />
+        <span>LoteControl</span>
+      </a>
+      <nav class="header-nav" aria-label="Navegação principal">
+        <a href="index.html" class="nav-link hide-mobile">Início</a>
+        <a href="privacy.html" class="nav-link hide-mobile">Privacidade</a>
+        <a href="terms.html" class="nav-link hide-mobile">Termos</a>
+        <a href="https://github.com/guilhermetonin/LoteControl" target="_blank" rel="noopener noreferrer" class="nav-link">GitHub</a>
+        <span class="nav-divider" aria-hidden="true"></span>
+        <a href="#download" class="nav-cta">Download</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- 2. Apresentação principal: Título e descrição curta -->
+    <section class="hero-section" aria-labelledby="hero-heading">
+      <h1 id="hero-heading" class="hero-title">
+        Conciliação financeira e fechamento de caixa para casas lotéricas
+      </h1>
+      <p class="hero-subtitle">
+        Reúna o controle do Pix, da Protege e o relatório diário em um só aplicativo, com sincronização pelo Google Drive.
+      </p>
+    </section>
+
+    <!-- 3. Demonstração visual real do LoteControl em destaque -->
+    <section class="showcase-section" aria-label="Demonstração da interface do LoteControl">
+      <div class="showcase-frame">
+        <div class="showcase-window">
+          <img
+            id="showcase-img"
+            src="assets/dashboard.png"
+            alt="Tela inicial de seleção de módulos do LoteControl"
+            class="showcase-image"
+            width="2102"
+            height="1310"
+          />
+        </div>
+      </div>
+
+      <div class="showcase-switcher" role="tablist" aria-label="Visualizar telas do aplicativo">
+        <button
+          type="button"
+          role="tab"
+          aria-selected="true"
+          class="switcher-btn active"
+          data-src="assets/dashboard.png"
+          data-alt="Tela inicial de seleção de módulos do LoteControl"
+        >
+          Visão Geral
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected="false"
+          class="switcher-btn"
+          data-src="assets/relatorio.png"
+          data-alt="Interface real do módulo Relatório no LoteControl exibindo o controle de Pix Faltando e Pix Sobrando"
+        >
+          Relatório Diário
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected="false"
+          class="switcher-btn"
+          data-src="assets/pix.png"
+          data-alt="Interface real do módulo Pix no LoteControl para importação e conferência de extratos da Caixa"
+        >
+          Conferência Pix
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected="false"
+          class="switcher-btn"
+          data-src="assets/protege.png"
+          data-alt="Interface real do módulo Protege no LoteControl para controle de cofres e recolhimentos"
+        >
+          Cofres Protege
+        </button>
+      </div>
+    </section>
+
+    <!-- 4. Download imediatamente abaixo da demonstração do aplicativo -->
+    <section id="download" class="download-section" aria-labelledby="download-heading">
+      <div class="download-divider" aria-hidden="true"></div>
+
+      <div class="download-app-icon-wrap">
+        <img
+          src="assets/icon.png"
+          alt="Ícone do aplicativo LoteControl"
+          class="download-app-icon"
+          width="76"
+          height="76"
+        />
+      </div>
+
+      <h2 id="download-heading" class="download-title">Baixar LoteControl</h2>
+      <p class="download-platform">Disponível para Windows 10 e Windows 11 (64-bit).</p>
+
+      <a
+        id="primary-download-btn"
+        href="https://github.com/guilhermetonin/LoteControl/releases/latest"
+        class="download-button"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 5.557 10.355 4.5v7.11H3V5.557Zm0 12.886 7.355 1.057v-7.03H3v5.973Zm8.173 1.168L21 21v-8.53h-9.827v7.141Zm0-15.222v7.221H21V3l-9.827 1.389Z" />
+        </svg>
+        <span>Baixar para Windows</span>
+      </a>
+
+      <p id="download-version-info" class="download-meta">
+        <a id="download-releases-link" href="https://github.com/guilhermetonin/LoteControl/releases/latest" target="_blank" rel="noopener noreferrer">
+          Acessar instalador e notas da versão no GitHub Releases
+        </a>
+      </p>
+    </section>
+  </main>
+
+  <!-- 5. Rodapé mínimo -->
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <img src="assets/icon.png" alt="" width="18" height="18" />
+        <span>LoteControl</span>
+      </div>
+      <nav class="footer-links" aria-label="Links institucionais">
+        <a href="privacy.html" class="footer-link">Política de Privacidade</a>
+        <a href="terms.html" class="footer-link">Termos de Uso</a>
+        <a href="mailto:gtoninjorge@gmail.com" class="footer-link">Contato</a>
+        <a href="https://github.com/guilhermetonin/LoteControl" target="_blank" rel="noopener noreferrer" class="footer-link">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      // 1. Seletor de capturas da demonstração
+      const img = document.getElementById('showcase-img');
+      const buttons = document.querySelectorAll('.switcher-btn');
+      buttons.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          const nextSrc = btn.getAttribute('data-src');
+          const nextAlt = btn.getAttribute('data-alt');
+          if (!nextSrc || img.getAttribute('src') === nextSrc) return;
+          buttons.forEach(function (b) {
+            b.classList.remove('active');
+            b.setAttribute('aria-selected', 'false');
+          });
+          btn.classList.add('active');
+          btn.setAttribute('aria-selected', 'true');
+          img.style.opacity = '0.35';
+          setTimeout(function () {
+            img.setAttribute('src', nextSrc);
+            if (nextAlt) img.setAttribute('alt', nextAlt);
+            img.style.opacity = '1';
+          }, 110);
+        });
+      });
+
+      // 2. Consulta dinâmica sem cache da última release publicada no GitHub
+      const RELEASES_API = 'https://api.github.com/repos/guilhermetonin/LoteControl/releases/latest';
+      const FALLBACK_RELEASES_URL = 'https://github.com/guilhermetonin/LoteControl/releases/latest';
+      const downloadBtn = document.getElementById('primary-download-btn');
+      const versionInfo = document.getElementById('download-version-info');
+
+      let resolvedExeUrl = null;
+      let resolvedFallbackUrl = FALLBACK_RELEASES_URL;
+
+      function renderFallback() {
+        resolvedExeUrl = null;
+        if (downloadBtn) {
+          downloadBtn.setAttribute('href', FALLBACK_RELEASES_URL);
+        }
+        if (versionInfo) {
+          versionInfo.textContent = '';
+          const link = document.createElement('a');
+          link.href = FALLBACK_RELEASES_URL;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = 'Acessar instalador e notas da versão no GitHub Releases';
+          versionInfo.appendChild(link);
+        }
+      }
+
+      function fetchLatestRelease() {
+        return fetch(RELEASES_API, {
+          cache: 'no-store',
+          headers: { Accept: 'application/vnd.github+json' }
+        })
+          .then(function (response) {
+            if (!response.ok) {
+              throw new Error('Falha ao consultar GitHub Releases: HTTP ' + response.status);
+            }
+            return response.json();
+          })
+          .then(function (release) {
+            if (!release || typeof release.tag_name !== 'string' || !release.tag_name.trim()) {
+              renderFallback();
+              return null;
+            }
+
+            const rawTag = release.tag_name.trim();
+            const cleanVersion = rawTag.replace(/^v/i, '');
+            const releasePageUrl = (typeof release.html_url === 'string' && release.html_url)
+              ? release.html_url
+              : FALLBACK_RELEASES_URL;
+            resolvedFallbackUrl = releasePageUrl;
+
+            const assets = Array.isArray(release.assets) ? release.assets : [];
+            const exeAsset = assets.find(function (asset) {
+              return (
+                asset &&
+                typeof asset.name === 'string' &&
+                /\.exe$/i.test(asset.name) &&
+                typeof asset.browser_download_url === 'string' &&
+                asset.browser_download_url.length > 0
+              );
+            });
+
+            if (exeAsset) {
+              resolvedExeUrl = exeAsset.browser_download_url;
+              if (downloadBtn) {
+                downloadBtn.setAttribute('href', resolvedExeUrl);
+              }
+            } else {
+              resolvedExeUrl = null;
+              if (downloadBtn) {
+                downloadBtn.setAttribute('href', releasePageUrl);
+              }
+            }
+
+            if (versionInfo) {
+              versionInfo.textContent = 'Versão ' + cleanVersion + ' \u00B7 ';
+              const link = document.createElement('a');
+              link.href = releasePageUrl;
+              link.target = '_blank';
+              link.rel = 'noopener noreferrer';
+              link.textContent = exeAsset
+                ? 'Notas da versão no GitHub Releases'
+                : 'Ver arquivos da versão no GitHub Releases';
+              versionInfo.appendChild(link);
+            }
+
+            return resolvedExeUrl;
+          })
+          .catch(function () {
+            renderFallback();
+            return null;
+          });
+      }
+
+      const initialFetchPromise = fetchLatestRelease();
+
+      if (downloadBtn) {
+        downloadBtn.addEventListener('click', function (e) {
+          // Se o link direto do .exe já foi obtido na carga da página, o navegador baixa diretamente
+          if (resolvedExeUrl && downloadBtn.getAttribute('href') === resolvedExeUrl) {
+            return;
+          }
+          // Caso o usuário clique antes da resposta da API terminar, aguarda a resolução sem cache e inicia o download direto do .exe
+          e.preventDefault();
+          initialFetchPromise.then(function (exeUrl) {
+            if (exeUrl) {
+              window.location.assign(exeUrl);
+            } else {
+              window.location.assign(resolvedFallbackUrl || FALLBACK_RELEASES_URL);
+            }
+          });
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
