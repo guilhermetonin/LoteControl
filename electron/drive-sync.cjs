@@ -31,13 +31,37 @@ class GoogleDriveSync {
     this.unreadableSecrets = new Set();
     this.unreadableTokens = new Set();
     this.credentialWarning = null;
+    this.folderCache = new Map();
+    this.autoSyncActive = false;
+  }
+
+  async fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort(new Error(`Timeout na requisição de rede (${timeoutMs}ms): ${url}`));
+    }, timeoutMs);
+
+    try {
+      const resp = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      return resp;
+    } catch (err) {
+      if (err.name === 'AbortError' || controller.signal.aborted) {
+        throw new Error(`Timeout na comunicação com o Google Drive (${timeoutMs / 1000}s). Verifique sua conexão de rede.`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   extractFolderId(input) {
     if (!input) return '';
-    const trimmed = input.trim();
+    const trimmed = String(input).trim().replace(/^["']|["']$/g, '');
     // Extrai o ID caso o usuário cole a URL completa do Google Drive
-    const match = trimmed.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    const match = trimmed.match(/\/folders\/([a-zA-Z0-9_-]+)/) || trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
     if (match) return match[1];
     return trimmed;
   }
@@ -343,11 +367,12 @@ class GoogleDriveSync {
         redirectUri = `http://127.0.0.1:${port}/oauth2callback`;
 
         // URL de autorização OAuth 2.0 Google
-        const scopes = [
-          config.scope || 'https://www.googleapis.com/auth/drive',
+        const configuredScope = config.scope && config.scope.trim() ? config.scope.trim() : 'https://www.googleapis.com/auth/drive';
+        const scopes = Array.from(new Set([
+          configuredScope,
           'https://www.googleapis.com/auth/userinfo.email',
           'https://www.googleapis.com/auth/userinfo.profile'
-        ];
+        ]));
 
         const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
           `client_id=${encodeURIComponent(config.clientId)}&` +
@@ -387,7 +412,7 @@ class GoogleDriveSync {
       redirect_uri: redirectUri
     });
 
-    const resp = await fetch(tokenUrl, {
+    const resp = await this.fetchWithTimeout(tokenUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params.toString()
@@ -404,7 +429,7 @@ class GoogleDriveSync {
 
   async fetchUserInfo(accessToken) {
     try {
-      const resp = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      const resp = await this.fetchWithTimeout('https://www.googleapis.com/oauth2/v2/userinfo', {
         headers: { Authorization: `Bearer ${accessToken}` }
       });
       if (resp.ok) {
@@ -442,7 +467,7 @@ class GoogleDriveSync {
       grant_type: 'refresh_token'
     });
 
-    const resp = await fetch(tokenUrl, {
+    const resp = await this.fetchWithTimeout(tokenUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params.toString()
@@ -473,11 +498,14 @@ class GoogleDriveSync {
     const accessToken = await this.getValidAccessToken();
     if (!accessToken) throw new Error('Não autenticado com o Google.');
 
-    const cleanFolderId = (folderId || '').trim();
+    const cleanFolderId = this.extractFolderId(folderId);
     if (!cleanFolderId) throw new Error('Identificador da pasta do Google Drive não informado.');
+    if (cleanFolderId.toLowerCase() === 'root') {
+      throw new Error('O identificador não pode ser a raiz do Google Drive (root). Informe o ID da pasta compartilhada.');
+    }
 
-    // Consulta metadados e permissões da pasta via API
-    const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${cleanFolderId}?fields=id,name,mimeType,capabilities,shared,owners`, {
+    // Consulta metadados e permissões da pasta via API com suporte a drives compartilhados
+    const resp = await this.fetchWithTimeout(`https://www.googleapis.com/drive/v3/files/${cleanFolderId}?fields=id,name,mimeType,capabilities,shared,owners,trashed&supportsAllDrives=true`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
 
@@ -485,12 +513,19 @@ class GoogleDriveSync {
       throw new Error('Pasta não encontrada no Google Drive ou a conta conectada não possui permissão para acessá-la.');
     }
 
+    if (resp.status === 403) {
+      throw new Error('Acesso negado: a conta conectada não tem permissão para acessar esta pasta compartilhada. Solicite permissão de editor ao proprietário da pasta.');
+    }
+
     if (!resp.ok) {
-      const err = await resp.json();
+      const err = await resp.json().catch(() => ({}));
       throw new Error(err.error?.message || `Erro ao acessar pasta (Status ${resp.status})`);
     }
 
     const folderData = await resp.json();
+    if (folderData.trashed) {
+      throw new Error('A pasta configurada está na lixeira do Google Drive.');
+    }
     if (folderData.mimeType !== 'application/vnd.google-apps.folder') {
       throw new Error('O identificador informado não corresponde a uma pasta do Google Drive.');
     }
@@ -887,14 +922,38 @@ class GoogleDriveSync {
     })).filter(item => item.file);
 
     const deleted = [];
+    const failed = [];
     if (!dryRun) {
       for (const item of toDelete) {
-        const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${item.file.id}`, {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${accessToken}` }
-        });
-        if (resp.ok) {
-          deleted.push(item);
+        try {
+          const resp = await this.fetchWithTimeout(`https://www.googleapis.com/drive/v3/files/${item.file.id}?supportsAllDrives=true`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${accessToken}` }
+          });
+          if (resp.ok || resp.status === 204 || resp.status === 404) {
+            deleted.push(item);
+          } else {
+            const errData = await resp.json().catch(() => ({}));
+            const errMsg = errData.error?.message || `Status HTTP ${resp.status}`;
+            failed.push({
+              version_id: item.version_id,
+              version_num: item.version_num,
+              fileName: item.file.name,
+              fileId: item.file.id,
+              status: resp.status,
+              reason: resp.status === 403
+                ? 'Permissão insuficiente no Google Drive para excluir arquivo pertencente a outro usuário'
+                : errMsg
+            });
+          }
+        } catch (fetchErr) {
+          failed.push({
+            version_id: item.version_id,
+            version_num: item.version_num,
+            fileName: item.file.name,
+            fileId: item.file.id,
+            reason: fetchErr.message
+          });
         }
       }
     }
@@ -905,11 +964,19 @@ class GoogleDriveSync {
       keptCount: analysis.kept.length,
       prunableCount: toDelete.length,
       deletedCount: deleted.length,
+      failedCount: failed.length,
+      deleted: deleted.map(d => ({
+        version_id: d.version_id,
+        version_num: d.version_num,
+        fileName: d.file?.name,
+        fileId: d.file?.id
+      })),
+      failed,
       prunable: toDelete.map(d => ({
         version_id: d.version_id,
         version_num: d.version_num,
-        fileName: d.file.name,
-        fileId: d.file.id
+        fileName: d.file?.name,
+        fileId: d.file?.id
       }))
     };
   }
@@ -1211,7 +1278,26 @@ class GoogleDriveSync {
 
     try {
       const accessToken = await this.getValidAccessToken();
-      const folderId = config.folderId.trim();
+      const folderId = this.extractFolderId(config.folderId);
+
+      if (!folderId || folderId.toLowerCase() === 'root') {
+        throw new Error('Identificador da pasta inválido ou apontando para a raiz do Google Drive (root).');
+      }
+
+      this.folderCache = new Map();
+
+      // Assegura que userEmail esteja disponível para auditoria dos snapshots
+      if (!config.userEmail) {
+        try {
+          const userInfo = await this.fetchUserInfo(accessToken);
+          if (userInfo && userInfo.email) {
+            config.userEmail = userInfo.email;
+            config.userName = userInfo.name || config.userName;
+            this.db.setSyncState('user_email', userInfo.email);
+            if (userInfo.name) this.db.setSyncState('user_name', userInfo.name);
+          }
+        } catch {}
+      }
 
       // 1. Valida permissão na pasta
       const folderInfo = await this.validateFolderAccess(folderId);
@@ -1275,6 +1361,8 @@ class GoogleDriveSync {
           if (!snapDoc || !snapDoc.snapshot) {
             snapDoc = await this.downloadFileContent(sf.file.id, accessToken);
             if (snapDoc && snapDoc.entries) {
+              snapDoc.fileId = sf.file.id;
+              snapDoc._fileId = sf.file.id;
               this.db.saveVersionHistory({
                 id: `vh_${snapDoc.version_id}`,
                 file_key: key,
@@ -1357,17 +1445,70 @@ class GoogleDriveSync {
               });
               pulledCount++;
             } else {
-              // Há pendências locais: verifica compatibilidade de registros
+              // Há pendências locais no Cenário A (Head Único + Pendência Local)
+              // Constrói mapa de registros locais atuais
               const currentLocalEntries = this.db.getAllLancamentosForFile(loterica, ano, mes, true);
-              const diffWithRemote = this.computeDiff(currentLocalEntries, remoteHead.entries);
+              const localMap = {};
+              for (const e of currentLocalEntries) {
+                localMap[e.id] = e;
+              }
+
+              // Localiza o snapshot-base comum (versão anterior às alterações locais)
+              let baseEntries = null;
+              if (lastAppliedVersionId) {
+                if (dag.snapshotsMap && dag.snapshotsMap[lastAppliedVersionId]?.entries) {
+                  baseEntries = dag.snapshotsMap[lastAppliedVersionId].entries;
+                } else {
+                  const baseHist = this.db.getVersionById(lastAppliedVersionId);
+                  if (baseHist && baseHist.snapshot) {
+                    baseEntries = baseHist.snapshot;
+                  }
+                }
+              }
+
+              // Fallback para o base_version_id ou parent do remoteHead se não localizado
+              if (!baseEntries && remoteHead.base_version_id) {
+                if (dag.snapshotsMap && dag.snapshotsMap[remoteHead.base_version_id]?.entries) {
+                  baseEntries = dag.snapshotsMap[remoteHead.base_version_id].entries;
+                } else {
+                  const baseHist = this.db.getVersionById(remoteHead.base_version_id);
+                  if (baseHist && baseHist.snapshot) {
+                    baseEntries = baseHist.snapshot;
+                  }
+                }
+              }
+
+              if (!baseEntries && Array.isArray(remoteHead.parent_version_ids) && remoteHead.parent_version_ids[0]) {
+                const parentId = remoteHead.parent_version_ids[0];
+                if (dag.snapshotsMap && dag.snapshotsMap[parentId]?.entries) {
+                  baseEntries = dag.snapshotsMap[parentId].entries;
+                } else {
+                  const parentHist = this.db.getVersionById(parentId);
+                  if (parentHist && parentHist.snapshot) {
+                    baseEntries = parentHist.snapshot;
+                  }
+                }
+              }
+
+              if (!baseEntries) {
+                baseEntries = {};
+              }
+
+              // Identifica os IDs dos registros modificados localmente e pendentes na fila
               const pendingIds = new Set(localPending.map(p => {
                 try { return JSON.parse(p.payload).id; } catch { return null; }
               }).filter(Boolean));
 
-              const hasConflict = diffWithRemote.updated.some(u => pendingIds.has(u.id)) ||
-                                  diffWithRemote.deleted.some(d => pendingIds.has(d.id));
+              // Realiza a comparação trilateral (3-way merge) entre a base comum, o banco local e o head remoto
+              const mergeResult = this.threeWayMerge(baseEntries, localMap, remoteHead.entries);
+
+              // Conflito REAL ocorre exclusivamente se registros pendentes locais tiverem
+              // alterações incompatíveis com o remoteHead (ex: mesmo registro alterado com valores divergentes)
+              const realConflicts = (mergeResult.conflicts || []).filter(c => pendingIds.has(c.id));
+              const hasConflict = realConflicts.length > 0;
 
               if (hasConflict) {
+                const diffSummary = `${realConflicts.length} conflito(s) simultâneo(s) no mesmo registro entre alterações locais e remotas`;
                 this.pendingRemoteUpdates[key] = {
                   fileKey: key,
                   fileId: remoteHead.fileId || remoteHead._fileId || remoteHead.version_id,
@@ -1378,8 +1519,12 @@ class GoogleDriveSync {
                   remoteVersionId: remoteHead.version_id,
                   updatedBy: remoteHead.updated_by || { device_name: 'Outro Computador' },
                   updatedAt: remoteHead.updated_at,
-                  summary: diffWithRemote.summary,
-                  diff: diffWithRemote,
+                  summary: diffSummary,
+                  diff: {
+                    conflicts: realConflicts,
+                    remoteHead,
+                    summary: diffSummary
+                  },
                   hasConflict: true
                 };
                 conflictCount++;
@@ -1391,11 +1536,12 @@ class GoogleDriveSync {
                   mes,
                   remoteVersionNum: remoteHead.version_num,
                   updatedBy: remoteHead.updated_by || { device_name: 'Outro Computador' },
-                  summary: diffWithRemote.summary,
-                  diff: diffWithRemote
+                  summary: diffSummary,
+                  diff: this.pendingRemoteUpdates[key].diff
                 });
               } else {
-                // Alterações disjuntas: aplica registros remotos não pendentes localmente
+                // Alterações independentes / disjuntas (ex: T1 alterou SOBRA e T2 alterou FALTA):
+                // 1. Aplica registros remotos modificados ou novos que não estão na fila pendente local
                 for (const [rid, rentry] of Object.entries(remoteHead.entries)) {
                   if (!pendingIds.has(rid)) {
                     if (rentry.deleted) {
@@ -1410,7 +1556,30 @@ class GoogleDriveSync {
                     }
                   }
                 }
+
+                // 2. Registros que existiam na base, foram excluídos remotamente e não foram tocados localmente
+                for (const bid of Object.keys(baseEntries)) {
+                  if (!pendingIds.has(bid) && !remoteHead.entries[bid]) {
+                    this.db.deleteLancamento(bid, { fromSync: true });
+                  }
+                }
+
+                // 3. Atualiza ponteiro de versão e limpa estado de atualização remota pendente
+                this.db.setSyncState(`last_version_id_${key}`, remoteHead.version_id);
+                this.db.setSyncState(`last_version_num_${key}`, remoteHead.version_num);
+                delete this.pendingRemoteUpdates[key];
                 pulledCount++;
+
+                this.onRemoteUpdate({
+                  type: 'applied',
+                  fileKey: key,
+                  loterica,
+                  ano,
+                  mes,
+                  versionNum: remoteHead.version_num,
+                  updatedBy: remoteHead.updated_by || { device_name: 'Outro Computador' },
+                  summary: remoteHead.summary || 'Alterações remotas mescladas com alterações locais pendentes'
+                });
               }
             }
           } else {
@@ -1637,19 +1806,20 @@ class GoogleDriveSync {
             if (snapFiles.length > 50) {
               const [lot, a, m] = key.split('_');
               console.log(`[DriveSync] Retenção automática: ${snapFiles.length} snapshots encontrados para ${key}. Executando poda segura...`);
-              await this.pruneRemoteSnapshots(folderId, lot, Number(a), Number(m), accessToken, {
+              const pruneRes = await this.pruneRemoteSnapshots(folderId, lot, Number(a), Number(m), accessToken, {
                 dryRun: false,
                 minRetention: 50,
                 gracePeriodMs: 48 * 3600 * 1000
               });
+              if (pruneRes && pruneRes.failedCount > 0) {
+                console.info(`[DriveSync] Retenção: ${pruneRes.deletedCount} excluído(s), ${pruneRes.failedCount} mantido(s) por pertencerem a outra conta na pasta compartilhada.`);
+              }
             }
           }
         } catch (retentionErr) {
           console.warn('[DriveSync] Aviso na retenção automática de snapshots (não impeditivo):', retentionErr.message);
         }
       }
-
-      this.notifyStatus();
 
       return {
         success: true,
@@ -1675,13 +1845,12 @@ class GoogleDriveSync {
       if (isAuthError) {
         this.status = 'Autorização expirada';
         this.lastError = 'A autorização da conta Google expirou ou foi revogada. Todos os dados locais e alterações pendentes foram preservados no SQLite. Clique em "Reconectar Conta Google" para renovar o acesso.';
-      } else if (err.message.includes('fetch') || err.message.includes('ENOTFOUND') || err.message.includes('ECONNREFUSED')) {
+      } else if (err.message.includes('fetch') || err.message.includes('ENOTFOUND') || err.message.includes('ECONNREFUSED') || err.message.includes('ETIMEDOUT') || err.message.includes('network') || err.message.includes('Failed to fetch') || err.message.includes('Timeout')) {
         this.status = 'Offline';
       } else {
         this.status = 'Erro de sincronização';
       }
 
-      this.notifyStatus();
       return {
         success: false,
         status: this.status,
@@ -1689,6 +1858,8 @@ class GoogleDriveSync {
       };
     } finally {
       this.isSyncing = false;
+      this.updateStatusAfterSync();
+      this.notifyStatus();
     }
   }
 
@@ -1801,7 +1972,7 @@ class GoogleDriveSync {
     };
   }
 
-  // Aceita a versão remota: aplica o snapshot ao SQLite local e limpa a fila pendente daquele arquivo
+    // Aceita a versão remota: aplica o snapshot ao SQLite local e resolve bifurcações no DAG
   async acceptRemoteVersion(fileKey) {
     const update = this.pendingRemoteUpdates[fileKey];
     if (!update) throw new Error('Atualização remota não encontrada para esta chave.');
@@ -1823,47 +1994,94 @@ class GoogleDriveSync {
     // 2. Se não estiver no SQLite ou faltar entries, busca do Drive
     if (!remoteDoc || !remoteDoc.entries) {
       const accessToken = await this.getValidAccessToken();
-      if (accessToken && update.fileId) {
-        remoteDoc = await this.downloadFileContent(update.fileId, accessToken);
+      const fileIdToFetch = update._fileId || update.fileId;
+      if (accessToken && fileIdToFetch && !fileIdToFetch.startsWith('v_')) {
+        try {
+          remoteDoc = await this.downloadFileContent(fileIdToFetch, accessToken);
+        } catch (downloadErr) {
+          console.warn('[DriveSync] Erro ao baixar snapshot remoto do Drive:', downloadErr.message);
+        }
       }
     }
 
     if (!remoteDoc || !remoteDoc.entries) {
-      throw new Error('Não foi possível obter o documento remoto do Drive.');
+      throw new Error(`Não foi possível obter o documento remoto do Drive (${update.remoteVersionId || fileKey}). O arquivo pode ter sido removido do Google Drive.`);
     }
 
-    // Aplica o snapshot completo ao SQLite local
+    // 3. Aplica o snapshot completo ao SQLite local
     this.db.applySnapshot(update.loterica, update.ano, update.mes, remoteDoc.entries, { fromSync: true });
 
-    // Descarta alterações locais pendentes daquele arquivo
+    // 4. Descarta alterações locais pendentes daquele arquivo
     const localPending = this.db.getPendingSyncQueueForFile(update.loterica, update.ano, update.mes);
     for (const p of localPending) {
       this.db.markSyncQueueItem(p.id, 'completed');
     }
     this.db.clearProcessedSyncQueue();
 
-    // Atualiza controle de versão
-    this.db.setSyncState(`last_version_id_${fileKey}`, update.remoteVersionId);
-    this.db.setSyncState(`last_version_num_${fileKey}`, update.remoteVersionNum);
+    // 5. Se for uma bifurcação (fork com múltiplas cabeças no DAG), publica snapshot de reconciliação no Drive
+    // Isso é FUNDAMENTAL para fechar o fork no Drive e evitar que o conflito reapareça!
+    const isFork = Boolean(update.diff?.headA && update.diff?.headB);
+    let resolvedVersionId = update.remoteVersionId;
+    let resolvedVersionNum = update.remoteVersionNum;
 
-    // Grava histórico
-    this.db.saveVersionHistory({
-      id: `vh_${update.remoteVersionId}`,
-      file_key: fileKey,
-      loterica: update.loterica,
-      ano: update.ano,
-      mes: update.mes,
-      version_num: update.remoteVersionNum,
-      version_id: update.remoteVersionId,
-      base_version_id: remoteDoc.base_version_id || null,
-      created_at: new Date().toISOString(),
-      device_id: update.updatedBy?.device_id || '',
-      device_name: update.updatedBy?.device_name || 'Remoto',
-      user_email: update.updatedBy?.user_email || '',
-      summary: `Versão remota v${update.remoteVersionNum} aceita pelo usuário`,
-      changes: update.diff,
-      snapshot: remoteDoc.entries
-    });
+    if (isFork) {
+      const accessToken = await this.getValidAccessToken();
+      const config = this.getConfig();
+      const identity = this.db.getDeviceIdentity();
+      const nextVersionNum = Math.max(Number(update.diff.headA.version_num || 0), Number(update.diff.headB.version_num || 0)) + 1;
+      const newMergeVersionId = `v_${fileKey}_${nextVersionNum}_${Date.now()}_${identity.deviceId}`;
+      const summaryText = `Versão remota v${update.remoteVersionNum} aceita pelo usuário para reconciliar bifurcação`;
+      const parentVersionIds = [update.diff.headA.version_id, update.diff.headB.version_id].filter(Boolean);
+
+      try {
+        await this.publishSnapshot({
+          loterica: update.loterica,
+          ano: update.ano,
+          mes: update.mes,
+          versionNum: nextVersionNum,
+          versionId: newMergeVersionId,
+          baseVersionId: update.remoteVersionId,
+          parentVersionIds,
+          summaryText,
+          entriesMap: remoteDoc.entries,
+          accessToken,
+          folderId: config.folderId
+        });
+
+        resolvedVersionId = newMergeVersionId;
+        resolvedVersionNum = nextVersionNum;
+      } catch (pubErr) {
+        console.error('[DriveSync] Erro ao publicar merge de bifurcação:', pubErr.message);
+      }
+    } else {
+      // 6. Atualiza controle de versão local apenas se não foi publicado via publishSnapshot
+      this.db.setSyncState(`last_version_id_${fileKey}`, resolvedVersionId);
+      this.db.setSyncState(`last_version_num_${fileKey}`, resolvedVersionNum);
+
+      // 7. Grava histórico garantindo integridade dos nós pais
+      this.db.saveVersionHistory({
+        id: `vh_${resolvedVersionId}`,
+        file_key: fileKey,
+        loterica: update.loterica,
+        ano: update.ano,
+        mes: update.mes,
+        version_num: resolvedVersionNum,
+        version_id: resolvedVersionId,
+        base_version_id: update.remoteVersionId,
+        created_at: new Date().toISOString(),
+        device_id: update.updatedBy?.device_id || '',
+        device_name: update.updatedBy?.device_name || 'Remoto',
+        user_email: update.updatedBy?.user_email || '',
+        summary: `Versão remota v${update.remoteVersionNum} aceita pelo usuário`,
+        changes: { ...(update.diff || {}), parent_version_ids: update.remoteVersionId ? [update.remoteVersionId] : [] },
+        snapshot: remoteDoc.entries
+      });
+    }
+
+    // 8. Marca quaisquer conflitos de linha correspondentes no SQLite como resolvidos
+    if (typeof this.db.resolveConflictsForFile === 'function') {
+      this.db.resolveConflictsForFile(update.loterica, update.ano, update.mes);
+    }
 
     delete this.pendingRemoteUpdates[fileKey];
     this.isRemoteConfirmed = true;
@@ -1875,66 +2093,63 @@ class GoogleDriveSync {
     };
   }
 
-  // Mantém a versão local: cria uma nova versão sequencial e envia ao Drive
+  // Mantém a versão local: publica novo snapshot imutável convergindo as cabeças no Google Drive
   async keepLocalVersion(fileKey, reason = 'Versão local mantida pelo usuário') {
     const update = this.pendingRemoteUpdates[fileKey];
     if (!update) throw new Error('Atualização não encontrada.');
 
     const accessToken = await this.getValidAccessToken();
     const config = this.getConfig();
+    const folderId = config.folderId;
     const identity = this.db.getDeviceIdentity();
 
-    const nextVersionNum = update.remoteVersionNum + 1;
-    const newVersionId = `v_${fileKey}_${nextVersionNum}_${Date.now()}`;
+    // 1. Coleta os registros locais atuais do SQLite
     const allEntriesList = this.db.getAllLancamentosForFile(update.loterica, update.ano, update.mes, true);
     const entriesMap = {};
     for (const e of allEntriesList) {
       entriesMap[e.id] = { ...e, valor: Math.round(Number(e.valor) * 100) / 100 };
     }
 
-    const documentV2 = {
-      schema_version: 2,
+    // 2. Determina a numeração da versão e os pais para resolver a bifurcação ou o avanço
+    const isFork = Boolean(update.diff?.headA && update.diff?.headB);
+    const nextVersionNum = Math.max(
+      Number(update.remoteVersionNum || 0),
+      Number(update.diff?.headA?.version_num || 0),
+      Number(update.diff?.headB?.version_num || 0)
+    ) + 1;
+    const newVersionId = `v_${fileKey}_${nextVersionNum}_${Date.now()}_${identity.deviceId}`;
+
+    const parentVersionIds = isFork
+      ? [update.diff.headA.version_id, update.diff.headB.version_id].filter(Boolean)
+      : (update.remoteVersionId ? [update.remoteVersionId] : []);
+
+    // 3. Publica snapshot imutável no Google Drive (arquitetura DAG files.create, NUNCA PATCH in-place)
+    await this.publishSnapshot({
       loterica: update.loterica,
       ano: update.ano,
       mes: update.mes,
-      version_num: nextVersionNum,
-      version_id: newVersionId,
-      base_version_id: update.remoteVersionId,
-      updated_at: new Date().toISOString(),
-      updated_by: {
-        device_id: identity.deviceId,
-        device_name: identity.deviceName,
-        user_email: config.userEmail || ''
-      },
-      summary: reason,
-      entries: entriesMap,
-      history: [
-        {
-          version_num: nextVersionNum,
-          version_id: newVersionId,
-          updated_at: new Date().toISOString(),
-          updated_by: {
-            device_name: identity.deviceName,
-            user_email: config.userEmail || ''
-          },
-          summary: reason,
-          changes_count: allEntriesList.length
-        }
-      ]
-    };
+      versionNum: nextVersionNum,
+      versionId: newVersionId,
+      baseVersionId: update.remoteVersionId,
+      parentVersionIds,
+      summaryText: reason,
+      entriesMap,
+      accessToken,
+      folderId
+    });
 
-    await this.updateFileContent(update.fileId, documentV2, accessToken);
-
-    // Marca itens pendentes locais como completed
+    // 4. Marca itens pendentes locais como completed
     const localPending = this.db.getPendingSyncQueueForFile(update.loterica, update.ano, update.mes);
     for (const p of localPending) {
       this.db.markSyncQueueItem(p.id, 'completed');
     }
     this.db.clearProcessedSyncQueue();
 
+    // 5. Atualiza controle de versão local
     this.db.setSyncState(`last_version_id_${fileKey}`, newVersionId);
     this.db.setSyncState(`last_version_num_${fileKey}`, nextVersionNum);
 
+    // 6. Grava no histórico local
     this.db.saveVersionHistory({
       id: `vh_${newVersionId}`,
       file_key: fileKey,
@@ -1944,22 +2159,28 @@ class GoogleDriveSync {
       version_num: nextVersionNum,
       version_id: newVersionId,
       base_version_id: update.remoteVersionId,
-      created_at: documentV2.updated_at,
+      created_at: new Date().toISOString(),
       device_id: identity.deviceId,
       device_name: identity.deviceName,
       user_email: config.userEmail || '',
       summary: reason,
-      changes: { action: 'keep_local' },
+      changes: { action: 'keep_local', parent_version_ids: parentVersionIds },
       snapshot: entriesMap
     });
 
+    // 7. Marca quaisquer conflitos de linha correspondentes no SQLite como resolvidos
+    if (typeof this.db.resolveConflictsForFile === 'function') {
+      this.db.resolveConflictsForFile(update.loterica, update.ano, update.mes);
+    }
+
+    // 8. Remove da fila de atualizações pendentes
     delete this.pendingRemoteUpdates[fileKey];
     this.isRemoteConfirmed = true;
     this.updateStatus();
 
     return {
       success: true,
-      message: `Versão local gravada como v${nextVersionNum} no Google Drive.`
+      message: `Versão local mantida e publicada como v${nextVersionNum} no Google Drive.`
     };
   }
 
@@ -2191,7 +2412,7 @@ class GoogleDriveSync {
         url += `&pageToken=${encodeURIComponent(pageToken)}`;
       }
 
-      const resp = await fetch(url, {
+      const resp = await this.fetchWithTimeout(url, {
         headers: { Authorization: `Bearer ${accessToken}` }
       });
 
@@ -2245,17 +2466,29 @@ class GoogleDriveSync {
   }
 
   async getOrCreateFolder(parentFolderId, folderName, accessToken) {
+    if (!this.folderCache) this.folderCache = new Map();
+    const cacheKey = `${parentFolderId}:::${folderName}`;
+    if (this.folderCache.has(cacheKey)) {
+      return this.folderCache.get(cacheKey);
+    }
+
     const safeName = folderName.replace(/'/g, "\\'");
     const q = `'${parentFolderId}' in parents and name = '${safeName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
-    const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=10`;
-    const resp = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,createdTime)&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+    const resp = await this.fetchWithTimeout(searchUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (!resp.ok) throw new Error(`Falha ao buscar pasta "${folderName}" no Drive.`);
     const data = await resp.json();
     if (data.files && data.files.length > 0) {
-      return data.files[0].id;
+      // Ordenação determinística: pasta mais antiga / menor id preservada como canônica
+      const sorted = [...data.files].sort((a, b) =>
+        String(a.createdTime || '').localeCompare(String(b.createdTime || '')) || a.id.localeCompare(b.id)
+      );
+      const chosenId = sorted[0].id;
+      this.folderCache.set(cacheKey, chosenId);
+      return chosenId;
     }
 
-    const createResp = await fetch('https://www.googleapis.com/drive/v3/files', {
+    const createResp = await this.fetchWithTimeout('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -2269,6 +2502,24 @@ class GoogleDriveSync {
     });
     if (!createResp.ok) throw new Error(`Falha ao criar pasta "${folderName}" no Drive.`);
     const created = await createResp.json();
+
+    // Reconsulta de proteção contra corrida: se dois clientes criaram simultaneamente, converge para a canônica
+    try {
+      const verifyResp = await this.fetchWithTimeout(searchUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (verifyResp.ok) {
+        const verifyData = await verifyResp.json();
+        if (verifyData.files && verifyData.files.length > 1) {
+          const sorted = [...verifyData.files].sort((a, b) =>
+            String(a.createdTime || '').localeCompare(String(b.createdTime || '')) || a.id.localeCompare(b.id)
+          );
+          const canonicalId = sorted[0].id;
+          this.folderCache.set(cacheKey, canonicalId);
+          return canonicalId;
+        }
+      }
+    } catch {}
+
+    this.folderCache.set(cacheKey, created.id);
     return created.id;
   }
 
@@ -2279,7 +2530,7 @@ class GoogleDriveSync {
       supportsAllDrives: 'true',
       fields: 'id,parents'
     });
-    const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(itemId)}?${query}`, {
+    const response = await this.fetchWithTimeout(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(itemId)}?${query}`, {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${accessToken}` }
     });
@@ -2290,13 +2541,17 @@ class GoogleDriveSync {
   }
 
   async deleteRemoteItem(itemId, accessToken) {
-    const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(itemId)}?supportsAllDrives=true`, {
+    const response = await this.fetchWithTimeout(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(itemId)}?supportsAllDrives=true`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     if (!response.ok) {
+      if (response.status === 404) return;
       const error = await response.json().catch(() => ({}));
-      throw new Error(error.error?.message || 'Não foi possível remover o item vazio da estrutura duplicada do Drive.');
+      if (response.status === 403) {
+        throw new Error('Permissão insuficiente no Google Drive para remover item pertencente a outro usuário.');
+      }
+      throw new Error(error.error?.message || 'Não foi possível remover o item da estrutura do Drive.');
     }
   }
 
@@ -2345,7 +2600,7 @@ class GoogleDriveSync {
   }
 
   async downloadFileContent(fileId, accessToken) {
-    const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+    const resp = await this.fetchWithTimeout(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     if (!resp.ok) return null;
@@ -2388,7 +2643,7 @@ class GoogleDriveSync {
       JSON.stringify(contentObj) +
       closeDelim;
 
-    const resp = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,modifiedTime', {
+    const resp = await this.fetchWithTimeout('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,modifiedTime&supportsAllDrives=true', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -2413,7 +2668,7 @@ class GoogleDriveSync {
       headers['If-Match'] = options.etag;
     }
 
-    const resp = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+    const resp = await this.fetchWithTimeout(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify(contentObj)
@@ -2436,23 +2691,28 @@ class GoogleDriveSync {
   // --- CICLO DE SINCRONIZAÇÃO AUTOMÁTICA ---
   startAutoSync() {
     this.stopAutoSync();
+    this.autoSyncActive = true;
 
-    // 1. Sincronização inicial ao iniciar a aplicação
+    // 1. Sincronização inicial ao iniciar a aplicação (após 2s de warmup)
     this.initialSyncTimer = setTimeout(() => {
       this.initialSyncTimer = null;
-      this.sync().catch(err => console.warn('[DriveSync] Aviso na sincronização inicial:', err.message));
+      if (this.autoSyncActive) {
+        this.sync().catch(err => console.warn('[DriveSync] Aviso na sincronização inicial:', err.message));
+      }
     }, 2000);
 
-    // 2. Verificação periódica padrão de 5 segundos (ou configurada pelo usuário)
+    // 2. Verificação periódica padrão com proteção contra sobreposição
     const currentCfg = this.getConfig();
     const intervalSec = currentCfg.syncIntervalSec || 5;
     this.syncIntervalMs = intervalSec * 1000;
     this.periodicTimer = setInterval(() => {
+      if (!this.autoSyncActive || this.isSyncing) return;
       this.sync().catch(err => console.warn('[DriveSync] Aviso na sincronização periódica:', err.message));
     }, this.syncIntervalMs);
   }
 
   stopAutoSync() {
+    this.autoSyncActive = false;
     if (this.initialSyncTimer) {
       clearTimeout(this.initialSyncTimer);
       this.initialSyncTimer = null;
@@ -2478,6 +2738,41 @@ class GoogleDriveSync {
     }, 3000); // 3 segundos de debounce para digitação
   }
 
+  updateStatusAfterSync() {
+    const tokens = this.getStoredTokens();
+    const config = this.getConfig();
+
+    if (!tokens || !tokens.access_token || !config.folderId) {
+      this.status = 'Não configurado';
+      return;
+    }
+
+    const conflicts = this.db ? this.db.getUnresolvedConflicts().length : 0;
+    const remoteUpdates = Object.keys(this.pendingRemoteUpdates || {}).length;
+
+    if (conflicts > 0 || remoteUpdates > 0) {
+      this.status = 'Conflito';
+      return;
+    }
+
+    if (this.lastError && (this.status === 'Offline' || this.status === 'Autorização expirada' || this.status === 'Erro de sincronização')) {
+      return;
+    }
+
+    const pending = this.db ? this.db.getPendingSyncQueue().length : 0;
+    if (pending > 0) {
+      this.status = 'Sincronização pendente';
+      return;
+    }
+
+    if (this.isRemoteConfirmed || config.lastSyncTime) {
+      this.status = 'Sincronizado';
+      return;
+    }
+
+    this.status = 'Pronto para sincronizar';
+  }
+
   updateStatus() {
     const tokens = this.getStoredTokens();
     const config = this.getConfig();
@@ -2485,18 +2780,18 @@ class GoogleDriveSync {
     if (!tokens || !tokens.access_token || !config.folderId) {
       this.status = 'Não configurado';
     } else {
-      const pending = this.db.getPendingSyncQueue().length;
-      const conflicts = this.db.getUnresolvedConflicts().length;
-      const remoteUpdates = Object.keys(this.pendingRemoteUpdates).length;
+      const pending = this.db ? this.db.getPendingSyncQueue().length : 0;
+      const conflicts = this.db ? this.db.getUnresolvedConflicts().length : 0;
+      const remoteUpdates = Object.keys(this.pendingRemoteUpdates || {}).length;
 
       if (conflicts > 0 || remoteUpdates > 0) {
         this.status = 'Conflito';
+      } else if (this.isSyncing) {
+        this.status = 'Sincronizando';
       } else if (pending > 0) {
         this.status = 'Sincronização pendente';
-      } else if (this.isRemoteConfirmed) {
+      } else if (this.isRemoteConfirmed || config.lastSyncTime) {
         this.status = 'Sincronizado';
-      } else if (config.lastSyncTime) {
-        this.status = 'Verificação pendente';
       } else {
         this.status = 'Pronto para sincronizar';
       }
@@ -2515,6 +2810,19 @@ class GoogleDriveSync {
     const conflicts = this.db ? this.db.getUnresolvedConflicts() : [];
     const pendingUpdates = Object.values(this.pendingRemoteUpdates || {});
 
+    // Previne divergência: se isSyncing é false mas status continuou como 'Sincronizando'
+    if (!this.isSyncing && this.status === 'Sincronizando') {
+      if (conflicts.length > 0 || pendingUpdates.length > 0) {
+        this.status = 'Conflito';
+      } else if (pendingCount > 0) {
+        this.status = 'Sincronização pendente';
+      } else if (this.isRemoteConfirmed || config.lastSyncTime) {
+        this.status = 'Sincronizado';
+      } else {
+        this.status = 'Pronto para sincronizar';
+      }
+    }
+
     return {
       status: this.status,
       userEmail: config.userEmail,
@@ -2526,7 +2834,8 @@ class GoogleDriveSync {
       conflicts: conflicts,
       pendingRemoteUpdates: pendingUpdates,
       lastError: this.lastError || this.credentialWarning,
-      credentialWarning: this.credentialWarning
+      credentialWarning: this.credentialWarning,
+      isSyncing: Boolean(this.isSyncing)
     };
   }
 }

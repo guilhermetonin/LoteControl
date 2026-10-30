@@ -867,17 +867,19 @@ textarea {
 }
 
 /* ============================================================================
-   TOP-RIGHT POP-UP NOTIFICATIONS (Toast)
+   BOTTOM-LEFT POP-UP NOTIFICATIONS (Toast) - Padronizado Globalmente
    ============================================================================ */
 .lc-toast-viewport {
   position: fixed;
-  top: 58px;
-  right: 18px;
+  bottom: 24px;
+  left: 24px;
+  top: auto;
+  right: auto;
   z-index: 2500;
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   gap: 8px;
-  max-width: min(440px, calc(100vw - 36px));
+  max-width: min(460px, calc(100vw - 48px));
   pointer-events: none;
 }
 
@@ -895,6 +897,18 @@ textarea {
   font-weight: 600;
   line-height: 1.35;
   color: #1e293b;
+  animation: lc-toast-slide-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes lc-toast-slide-in {
+  from {
+    transform: translateY(16px) scale(0.97);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
 }
 
 .lc-toast-icon {

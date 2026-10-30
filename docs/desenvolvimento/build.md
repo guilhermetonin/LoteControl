@@ -17,7 +17,7 @@ O instalador gerado pelo `electron-builder` segue a versão declarada dinamicame
 release/LoteControl Setup <versão>.exe
 ```
 
-*(Exemplo: com a versão `1.2.1` configurada no `package.json`, o artefato gerado será `release/LoteControl Setup 1.2.1.exe`).*
+*(Exemplo: com a versão `1.3.0` configurada no `package.json`, o artefato gerado será `release/LoteControl Setup 1.3.0.exe`).*
 
 ### Configuração do Instalador (NSIS)
 

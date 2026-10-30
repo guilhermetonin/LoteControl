@@ -466,6 +466,35 @@ class PixDatabase {
     return true;
   }
 
+  resolveConflictsForFile(loterica, ano, mes) {
+    if (!this.db) return 0;
+    const stmt = this.db.prepare("SELECT id, entry_id, local_data FROM sync_conflicts WHERE resolved = 0");
+    const toResolve = [];
+    const normLot = String(loterica || '').toUpperCase().trim();
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      try {
+        const local = JSON.parse(row.local_data);
+        if (
+          String(local.loterica || '').toUpperCase().trim() === normLot &&
+          Number(local.ano) === Number(ano) &&
+          Number(local.mes) === Number(mes)
+        ) {
+          toResolve.push(row.id);
+        }
+      } catch {}
+    }
+    stmt.free();
+
+    for (const cid of toResolve) {
+      const mStmt = this.db.prepare("UPDATE sync_conflicts SET resolved = 1 WHERE id = :id");
+      mStmt.run({ ':id': cid });
+      mStmt.free();
+    }
+    if (toResolve.length > 0) this.saveToDisk();
+    return toResolve.length;
+  }
+
   // --- CONSULTAS PRINCIPAIS DE LANÇAMENTOS ---
   getLancamentos(loterica, ano, mes, dayFilter = null) {
     let sql = `

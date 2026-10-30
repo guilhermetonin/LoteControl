@@ -9,6 +9,8 @@ import { DayFilterPopover, LotericaSelector, ToastNotification, type LotericaOpt
 import { useRelatorioTableSelection } from './useRelatorioTableSelection';
 import { useRelatorioVirtualTable } from './useRelatorioVirtualTable';
 import './relatorio.css';
+import { SyncStatusBadge } from './components/SyncStatusBadge';
+import { ConflictResolutionModal, type ConflictItem } from './components/ConflictResolutionModal';
 
 const companies = ['CAÇULA', 'SORTE GRANDE', 'PUPINS'];
 const companyDetails = [LOTERICAS.cacula, LOTERICAS.sorteGrande, LOTERICAS.pupins];
@@ -57,6 +59,151 @@ function dateString(year: number, month: number, day: number) { return `${year}-
 function daysInMonth(year: number, month: number) { return new Date(year, month, 0).getDate(); }
 function valueDraft(value: any) { return (Number(value || 0)).toFixed(2).replace('.', ','); }
 
+export interface NormalizedDiffItem {
+  id: string;
+  operation: string;
+  entry?: any;
+  local?: any;
+  remote?: any;
+  base?: any;
+  details?: string;
+}
+
+export function normalizeDiffItems(diff: any): NormalizedDiffItem[] {
+  if (!diff) return [];
+  if (Array.isArray(diff)) {
+    return diff.map((item: any, idx: number) => {
+      if (typeof item !== 'object' || item === null) {
+        return { id: String(idx), operation: 'Alteração', entry: null };
+      }
+      return {
+        id: item.id || item.entry_id || String(idx),
+        operation: item.operation || item.type || 'Alteração',
+        entry: item.entry || item.remote || item.local || item,
+        local: item.local,
+        remote: item.remote,
+        details: item.details
+      };
+    });
+  }
+
+  const items: NormalizedDiffItem[] = [];
+
+  if (Array.isArray(diff.conflicts)) {
+    for (const c of diff.conflicts) {
+      const localEntry = c.local || c.entryA || c.a || null;
+      const remoteEntry = c.remote || c.entryB || c.b || null;
+      const activeEntry = remoteEntry || localEntry || c.entry || c;
+      items.push({
+        id: c.id || c.entry_id || (activeEntry && activeEntry.id) || String(items.length),
+        operation: 'Conflito',
+        entry: activeEntry,
+        local: localEntry,
+        remote: remoteEntry,
+        base: c.base || null,
+        details: 'Alterações conflitantes sobre o mesmo registro'
+      });
+    }
+  }
+
+  if (Array.isArray(diff.updated)) {
+    for (const u of diff.updated) {
+      items.push({
+        id: u.id || (u.remote && u.remote.id) || (u.local && u.local.id) || String(items.length),
+        operation: 'Alteração',
+        entry: u.remote || u.local || u,
+        local: u.local,
+        remote: u.remote,
+        details: Array.isArray(u.diffs)
+          ? u.diffs.map((d: any) => `${d.label || d.field}: ${d.localVal ?? '-'} → ${d.remoteVal ?? '-'}`).join(', ')
+          : undefined
+      });
+    }
+  }
+
+  if (Array.isArray(diff.added)) {
+    for (const a of diff.added) {
+      items.push({
+        id: a.id || String(items.length),
+        operation: 'Novo',
+        entry: a,
+        remote: a,
+        details: 'Registro criado remotamente'
+      });
+    }
+  }
+
+  if (Array.isArray(diff.deleted)) {
+    for (const d of diff.deleted) {
+      items.push({
+        id: d.id || String(items.length),
+        operation: 'Exclusão',
+        entry: d.localEntry || d,
+        local: d.localEntry || d,
+        remote: d,
+        details: 'Registro excluído remotamente'
+      });
+    }
+  }
+
+  return items;
+}
+
+export interface DiffErrorBoundaryProps {
+  children: React.ReactNode;
+  onReset?: () => void;
+}
+
+export interface DiffErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+export class DiffErrorBoundary extends React.Component<DiffErrorBoundaryProps, DiffErrorBoundaryState> {
+  constructor(props: DiffErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): DiffErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('[DiffErrorBoundary] Falha de renderização no painel de comparação:', error, errorInfo);
+  }
+
+  reset = () => {
+    this.setState({ hasError: false, error: null });
+    this.props.onReset?.();
+  };
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <section className="rp-sync-card rp-sync-issues">
+          <div className="rp-section-heading">
+            <div>
+              <p className="rp-eyebrow">COMPARAÇÃO</p>
+              <h2>Erro ao exibir comparação</h2>
+            </div>
+            <button type="button" className="rp-icon-button" onClick={this.reset} aria-label="Fechar comparação">
+              <X size={15} />
+            </button>
+          </div>
+          <p style={{ color: '#dc2626', fontSize: '13px', margin: '12px 0' }}>
+            Não foi possível renderizar a lista de diferenças ({this.state.error?.message || 'Erro inesperado'}). As alterações locais continuam preservadas.
+          </p>
+          <button type="button" className="rp-button rp-button-outline" onClick={this.reset}>
+            Fechar comparação
+          </button>
+        </section>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string; isActive: boolean }) {
   const now = new Date();
   const [company, setCompany] = useState(companies[0]);
@@ -87,6 +234,9 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
   const [minimizeToTray, setMinimizeToTray] = useState(false);
   const [pendingUpdates, setPendingUpdates] = useState<any[]>([]);
   const [conflicts, setConflicts] = useState<any[]>([]);
+  const [conflictModalOpen, setConflictModalOpen] = useState(false);
+  const [snoozeUntil, setSnoozeUntil] = useState<number>(0);
+  const snoozeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [remoteDiff, setRemoteDiff] = useState<any>(null);
   const [renameForm, setRenameForm] = useState<{ oldName: string; newName: string } | null>(null);
   const [importModal, setImportModal] = useState<{
@@ -143,6 +293,166 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
       setConflicts(openConflicts || []);
     } catch (reason: any) { setError(reason?.message || 'Não foi possível consultar a sincronização.'); }
   }, [api]);
+
+  // Unificação de conflitos de linha (SQLite) e conflitos de versão/snapshot (Google Drive)
+  const allConflicts = useMemo<ConflictItem[]>(() => {
+    const list: ConflictItem[] = [];
+
+    // 1. Conflitos de linha persistidos no SQLite (tabela sync_conflicts)
+    for (const item of conflicts) {
+      list.push({
+        id: String(item.id),
+        entry_id: item.entry_id,
+        source: 'conflict',
+        local_data: item.local_data || {},
+        remote_data: item.remote_data || {},
+        created_at: item.created_at || new Date().toISOString(),
+        summary: `Conflito • Lançamento ${item.entry_id}`
+      });
+    }
+
+    // 2. Conflitos de snapshot ou bifurcação do Google Drive (pendingRemoteUpdates)
+    for (const update of pendingUpdates) {
+      const diffConflicts = update.diff?.conflicts;
+      const diffUpdated = update.diff?.updated;
+
+      if (Array.isArray(diffConflicts) && diffConflicts.length > 0) {
+        for (const c of diffConflicts) {
+          list.push({
+            id: `pending_${update.fileKey}_${c.id || c.entry_id || list.length}`,
+            entry_id: c.id || c.entry_id,
+            source: 'pending_update',
+            fileKey: update.fileKey,
+            loterica: update.loterica,
+            ano: update.ano,
+            mes: update.mes,
+            local_data: c.local || c.entryA || c.a || {},
+            remote_data: c.remote || c.entryB || c.b || {},
+            created_at: update.updatedAt || new Date().toISOString(),
+            summary: `${update.loterica} (${update.mes}/${update.ano}) • v${update.remoteVersionNum}`
+          });
+        }
+      } else if (Array.isArray(diffUpdated) && diffUpdated.length > 0) {
+        for (const u of diffUpdated) {
+          list.push({
+            id: `pending_${update.fileKey}_${u.id || list.length}`,
+            entry_id: u.id,
+            source: 'pending_update',
+            fileKey: update.fileKey,
+            loterica: update.loterica,
+            ano: update.ano,
+            mes: update.mes,
+            local_data: u.local || {},
+            remote_data: u.remote || {},
+            created_at: update.updatedAt || new Date().toISOString(),
+            summary: `${update.loterica} (${update.mes}/${update.ano}) • v${update.remoteVersionNum}`
+          });
+        }
+      } else {
+        list.push({
+          id: `pending_file_${update.fileKey}`,
+          entry_id: update.fileKey,
+          source: 'pending_update',
+          fileKey: update.fileKey,
+          loterica: update.loterica,
+          ano: update.ano,
+          mes: update.mes,
+          local_data: {
+            loterica: update.loterica,
+            ano: update.ano,
+            mes: update.mes,
+            data_formatada: `${String(update.mes).padStart(2, '0')}/${update.ano}`,
+            tipo: 'Arquivo de Lançamentos',
+            funcionario: 'Alterações locais pendentes',
+            valor: '-',
+            status: 'Versão local deste computador',
+            observacoes: 'Existem alterações feitas neste computador pendentes de sincronização.'
+          },
+          remote_data: {
+            loterica: update.loterica,
+            ano: update.ano,
+            mes: update.mes,
+            data_formatada: `${String(update.mes).padStart(2, '0')}/${update.ano}`,
+            tipo: 'Arquivo de Lançamentos',
+            funcionario: update.updatedBy?.device_name || 'Outro computador',
+            valor: '-',
+            status: `Versão remota v${update.remoteVersionNum}`,
+            observacoes: `Snapshot gravado no Google Drive por ${update.updatedBy?.device_name || 'outro computador'}.`
+          },
+          created_at: update.updatedAt || new Date().toISOString(),
+          summary: `${update.loterica} (${update.mes}/${update.ano}) • v${update.remoteVersionNum}`
+        });
+      }
+    }
+
+    return list;
+  }, [conflicts, pendingUpdates]);
+
+  const allConflictsRef = useRef(allConflicts);
+  useEffect(() => {
+    allConflictsRef.current = allConflicts;
+  }, [allConflicts]);
+
+  // Abertura automática ao detectar conflitos (a menos que adiado)
+  useEffect(() => {
+    if (allConflicts.length > 0) {
+      if (Date.now() >= snoozeUntil) {
+        setConflictModalOpen(true);
+      }
+    } else {
+      setConflictModalOpen(false);
+    }
+  }, [allConflicts.length, snoozeUntil]);
+
+  // Mecanismo de adiamento (60s)
+  const handleSnoozeConflicts = useCallback((seconds: number = 60) => {
+    if (snoozeTimerRef.current) {
+      clearTimeout(snoozeTimerRef.current);
+      snoozeTimerRef.current = null;
+    }
+
+    const durationMs = (seconds || 60) * 1000;
+    const nextTime = Date.now() + durationMs;
+    setSnoozeUntil(nextTime);
+    setConflictModalOpen(false);
+
+    snoozeTimerRef.current = setTimeout(() => {
+      snoozeTimerRef.current = null;
+      setSnoozeUntil(0);
+      if (allConflictsRef.current.length > 0) {
+        setConflictModalOpen(true);
+      }
+    }, durationMs);
+  }, []);
+
+  const handleResolveConflict = useCallback(async (conflictOrId: any, choice: 'local' | 'remote', conflictObj?: any) => {
+    if (!api) return;
+    try {
+      const conflict = conflictObj || (typeof conflictOrId === 'object' ? conflictOrId : allConflictsRef.current.find(c => c.id === conflictOrId));
+      const conflictId = typeof conflictOrId === 'string' ? conflictOrId : conflict?.id;
+      const fileKey = conflict?.fileKey;
+
+      if (conflict?.source === 'pending_update' && fileKey) {
+        if (choice === 'local') {
+          await api.keepLocal(fileKey, 'Versão local mantida pelo usuário');
+        } else {
+          await api.acceptRemote(fileKey);
+        }
+      } else if (conflictId) {
+        await api.resolveConflict(conflictId, choice);
+      }
+      await refreshSync();
+      await refreshData(false);
+    } catch (err: any) {
+      setError(err?.message || 'Erro ao resolver conflito.');
+    }
+  }, [api, refreshSync, refreshData]);
+
+  useEffect(() => {
+    return () => {
+      if (snoozeTimerRef.current) clearTimeout(snoozeTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     void refreshData();
@@ -803,21 +1113,11 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
                 <span>Operação</span>
               </button>
             )}
-            <button
-              type="button"
-              className={`rp-drive-indicator ${
-                String(syncStatus.status || '').toLowerCase().includes('conflito')
-                  ? 'warning'
-                  : syncStatus.userEmail || String(syncStatus.status || '').toLowerCase().includes('sincronizado')
-                    ? 'ready'
-                    : ''
-              }`}
-              onClick={() => setSection('sincronizacao')}
-              title={`Google Drive: ${syncStatus.status || 'não configurado'}`}
-              aria-label="Abrir configurações do Relatório"
-            >
-              <span />
-            </button>
+            <SyncStatusBadge
+              syncStatus={syncStatus}
+              conflictsCount={allConflicts.length || (syncStatus?.conflictCount || 0)}
+              onClick={() => { if (allConflicts.length > 0) setConflictModalOpen(true); else setSection('sincronizacao'); }}
+            />
             <button
               type="button"
               className="lc-btn lc-btn-primary rp-button rp-button-primary primary"
@@ -961,11 +1261,28 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
             <div className="rp-drive-primary-actions"><button type="button" className="rp-button rp-button-primary lc-shared-action lc-shared-action-primary" onClick={() => void api?.syncNow().then(refreshSync).catch((reason: any) => setError(reason?.message || String(reason)))}><RefreshCw size={14} /> Sincronizar Agora</button><button type="button" className="rp-button rp-button-outline" onClick={() => setCredentialsOpen(true)}><Settings2 size={14} /> Configurações e Credenciais…</button></div>
             <div className="rp-sync-foot"><span>Conflitos: {syncStatus.conflictCount || 0}</span></div>
           </section>
-          {(pendingUpdates.length > 0 || conflicts.length > 0) && <section className="rp-sync-card rp-sync-issues"><h3>Revisões necessárias</h3>
-            {pendingUpdates.map((update: any) => <div className="rp-remote-row" key={update.fileKey}><div><strong>{update.loterica} · {update.mes}/{update.ano} · v{update.remoteVersionNum}</strong><span>{update.updatedBy?.device_name || 'Outro computador'} · {update.updatedAt ? new Date(update.updatedAt).toLocaleString('pt-BR') : ''}</span></div><button type="button" className="rp-button rp-button-outline" onClick={() => void api?.getVersionDiff(update.fileKey).then(setRemoteDiff)}><Search size={13} /> Ver diferenças</button><button type="button" className="rp-button rp-button-primary" onClick={() => window.confirm('Aplicar a versão remota? Alterações locais pendentes desse período serão substituídas pela decisão de sincronização.') && void api?.acceptRemote(update.fileKey).then(refreshSync).then(() => refreshData(false)).catch((reason: any) => setError(reason?.message || String(reason)))}>Aceitar versão remota</button><button type="button" className="rp-button rp-button-outline" onClick={() => window.confirm('Manter os dados deste computador e enviar uma nova versão ao Drive?') && void api?.keepLocal(update.fileKey, 'Versão local escolhida pelo usuário').then(refreshSync).catch((reason: any) => setError(reason?.message || String(reason)))}>Manter local</button></div>)}
-            {conflicts.map((item: any) => <div className="rp-remote-row" key={item.id}><div><strong>Conflito · {item.entry_id}</strong><span>{new Date(item.created_at).toLocaleString('pt-BR')}</span></div><button type="button" className="rp-button rp-button-outline" onClick={() => void api?.resolveConflict(item.id, 'local').then(refreshSync).catch((reason: any) => setError(reason?.message || String(reason)))}>Manter local</button><button type="button" className="rp-button rp-button-outline" onClick={() => void api?.resolveConflict(item.id, 'remote').then(refreshSync).then(() => refreshData(false)).catch((reason: any) => setError(reason?.message || String(reason)))}>Usar remoto</button></div>)}
-          </section>}
-          {remoteDiff && <section className="rp-sync-card"><div className="rp-section-heading"><div><p className="rp-eyebrow">COMPARAÇÃO</p><h2>{remoteDiff.loterica} · {remoteDiff.mes}/{remoteDiff.ano}</h2></div><button type="button" className="rp-icon-button" onClick={() => setRemoteDiff(null)} aria-label="Fechar comparação"><X size={15} /></button></div><p className="rp-diff-summary">Versão remota v{remoteDiff.remoteVersionNum} · {remoteDiff.diff?.length || 0} diferença(s)</p><div className="rp-diff-list">{(remoteDiff.diff || []).slice(0, 100).map((item: any, index: number) => <div key={item.id || index}><span>{item.operation || item.type || 'Alteração'}</span><strong>{item.entry?.dia ? `Dia ${item.entry.dia} · ` : ''}{brl.format(item.entry?.valor || item.local?.valor || item.remote?.valor || 0)}</strong></div>)}</div></section>}
+          {allConflicts.length > 0 && (
+            <section className="rp-sync-card rp-sync-issues">
+              <div className="rp-conflict-banner">
+                <div className="rp-conflict-banner-info">
+                  <div className="rp-conflict-banner-badge">
+                    <AlertTriangle size={18} />
+                  </div>
+                  <div>
+                    <strong>{allConflicts.length} conflito(s) de sincronização aguardando decisão</strong>
+                    <span>Para manter a integridade dos dados, a resolução é realizada de forma assistida no modal comparativo.</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="rp-button rp-button-primary"
+                  onClick={() => setConflictModalOpen(true)}
+                >
+                  Abrir Assistente de Conflitos
+                </button>
+              </div>
+            </section>
+          )}
           </div></div><footer className="rp-settings-footer"><span>Banco SQLite compartilhado do Relatório</span><button type="button" className="rp-button rp-button-primary" onClick={() => { setCredentialsOpen(false); setSection('operacao'); }}>Concluído</button></footer></section></div>
           {credentialsOpen && <div className="rp-credentials-overlay" onMouseDown={(event) => event.target === event.currentTarget && setCredentialsOpen(false)}><section className="rp-entry-modal rp-credentials-modal" role="dialog" aria-modal="true" aria-labelledby="rp-credentials-title">
             <header><div><p className="rp-eyebrow">GOOGLE DRIVE</p><h2 id="rp-credentials-title">Sincronização Google Drive</h2><span>Compartilhamento de dados com a conta já configurada para o Relatório</span></div><button type="button" className="rp-icon-button" onClick={() => setCredentialsOpen(false)} aria-label="Fechar configurações e credenciais"><X size={16} /></button></header>
@@ -1010,6 +1327,13 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
         </div>
         <footer><button type="button" className="rp-button rp-button-outline" onClick={() => setBulk(null)}>Cancelar</button><button type="button" className="rp-button rp-button-danger" disabled={busy || bulk.loadingPreview || !bulk.preview?.count} onClick={() => void runBulkDelete()}><Trash2 size={14} />{busy ? 'Excluindo…' : 'Confirmar Exclusão em Massa'}</button></footer>
       </section></div>}
+
+      <ConflictResolutionModal
+        isOpen={conflictModalOpen && allConflicts.length > 0}
+        conflicts={allConflicts}
+        onResolve={handleResolveConflict}
+        onSnooze={handleSnoozeConflicts}
+      />
 
       {importModal && (
         <div
