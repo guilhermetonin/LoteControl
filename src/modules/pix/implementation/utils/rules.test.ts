@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractDia, extractHorario, isPixHistorico, parseMonetaryValue, formatCurrencyBr } from './rules';
+import { extractDia, extractHorario, isPixHistorico, parseMonetaryValue, formatCurrencyBr, formatCurrencyPlain } from './rules';
 
 describe('Caixa PIX Business Rules', () => {
   describe('extractDia', () => {
@@ -84,7 +84,7 @@ describe('Caixa PIX Business Rules', () => {
   });
 
   describe('parseMonetaryValue and formatting', () => {
-    it('parses numeric values and formats correctly', () => {
+    it('parses numeric values directly without loss of precision', () => {
       const res1 = parseMonetaryValue(696);
       expect(res1.valor).toBe(696);
       expect(res1.centavos).toBe(69600);
@@ -94,6 +94,11 @@ describe('Caixa PIX Business Rules', () => {
       expect(res2.valor).toBe(10.12);
       expect(res2.centavos).toBe(1012);
       expect(res2.formattedBr).toBe('10,12');
+
+      const resLarge = parseMonetaryValue(24277.54);
+      expect(resLarge.valor).toBe(24277.54);
+      expect(resLarge.centavos).toBe(2427754);
+      expect(resLarge.formattedBr).toBe('24277,54');
     });
 
     it('parses Brazilian string formats and preserves negative signs', () => {
@@ -108,11 +113,94 @@ describe('Caixa PIX Business Rules', () => {
       expect(res4.formattedBr).toBe('-54,00');
     });
 
+    it('correctly parses real regression cases in all formats (Doc 201544, Doc 260704, Doc 271112)', () => {
+      // Caso 1: Doc 201544 - R$ 2.501,05 (virava R$ 2,50 no importador legado)
+      expect(parseMonetaryValue(2501.05)).toEqual({ valor: 2501.05, centavos: 250105, formattedBr: '2501,05', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('2501.05')).toEqual({ valor: 2501.05, centavos: 250105, formattedBr: '2501,05', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('2,501.05')).toEqual({ valor: 2501.05, centavos: 250105, formattedBr: '2501,05', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('2.501,05')).toEqual({ valor: 2501.05, centavos: 250105, formattedBr: '2501,05', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('R$ 2.501,05')).toEqual({ valor: 2501.05, centavos: 250105, formattedBr: '2501,05', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('R$ 2,501.05')).toEqual({ valor: 2501.05, centavos: 250105, formattedBr: '2501,05', isValid: true, isEmpty: false });
+
+      // Caso 2: Doc 260704 - R$ 24.277,54 (virava R$ 24,28 no importador legado)
+      expect(parseMonetaryValue(24277.54)).toEqual({ valor: 24277.54, centavos: 2427754, formattedBr: '24277,54', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('24277.54')).toEqual({ valor: 24277.54, centavos: 2427754, formattedBr: '24277,54', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('24,277.54')).toEqual({ valor: 24277.54, centavos: 2427754, formattedBr: '24277,54', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('24.277,54')).toEqual({ valor: 24277.54, centavos: 2427754, formattedBr: '24277,54', isValid: true, isEmpty: false });
+
+      // Caso 3: Doc 271112 - R$ 5.696,29 (virava R$ 5,70 no importador legado)
+      expect(parseMonetaryValue(5696.29)).toEqual({ valor: 5696.29, centavos: 569629, formattedBr: '5696,29', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('5696.29')).toEqual({ valor: 5696.29, centavos: 569629, formattedBr: '5696,29', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('5,696.29')).toEqual({ valor: 5696.29, centavos: 569629, formattedBr: '5696,29', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('5.696,29')).toEqual({ valor: 5696.29, centavos: 569629, formattedBr: '5696,29', isValid: true, isEmpty: false });
+    });
+
+    it('handles decimal values without thousands separator', () => {
+      expect(parseMonetaryValue('500,41')).toEqual({ valor: 500.41, centavos: 50041, formattedBr: '500,41', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('500.41')).toEqual({ valor: 500.41, centavos: 50041, formattedBr: '500,41', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue(500.41)).toEqual({ valor: 500.41, centavos: 50041, formattedBr: '500,41', isValid: true, isEmpty: false });
+    });
+
+    it('handles negative values across all supported notations', () => {
+      expect(parseMonetaryValue('-181,424.58')).toEqual({ valor: -181424.58, centavos: -18142458, formattedBr: '-181424,58', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('-54.00')).toEqual({ valor: -54, centavos: -5400, formattedBr: '-54,00', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('(54,00)')).toEqual({ valor: -54, centavos: -5400, formattedBr: '-54,00', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('54,00-')).toEqual({ valor: -54, centavos: -5400, formattedBr: '-54,00', isValid: true, isEmpty: false });
+    });
+
+    it('handles zero, empty and falsy inputs cleanly', () => {
+      expect(parseMonetaryValue(0)).toEqual({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('0')).toEqual({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('0,00')).toEqual({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('0.00')).toEqual({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: true, isEmpty: false });
+      expect(parseMonetaryValue('')).toEqual({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: true, isEmpty: true });
+      expect(parseMonetaryValue(null)).toEqual({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: true, isEmpty: true });
+      expect(parseMonetaryValue(undefined)).toEqual({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: true, isEmpty: true });
+    });
+
+    it('rejects invalid or corrupted text and flags isValid as false', () => {
+      expect(parseMonetaryValue('ABC')).toMatchObject({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: false, isEmpty: false, errorReason: 'Caracteres inválidos no valor monetário' });
+      expect(parseMonetaryValue('12a34')).toMatchObject({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: false, isEmpty: false, errorReason: 'Caracteres inválidos no valor monetário' });
+      expect(parseMonetaryValue('abc500,41')).toMatchObject({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: false, isEmpty: false, errorReason: 'Caracteres inválidos no valor monetário' });
+      expect(parseMonetaryValue('500,41abc')).toMatchObject({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: false, isEmpty: false, errorReason: 'Caracteres inválidos no valor monetário' });
+      expect(parseMonetaryValue(NaN)).toMatchObject({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: false, isEmpty: false, errorReason: 'Valor numérico não finito (NaN ou Infinity)' });
+      expect(parseMonetaryValue(Infinity)).toMatchObject({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: false, isEmpty: false, errorReason: 'Valor numérico não finito (NaN ou Infinity)' });
+    });
+
+    it('rejects malformed thousands separators', () => {
+      expect(parseMonetaryValue('1,2,3')).toMatchObject({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: false, isEmpty: false, errorReason: 'Separadores de milhar malformados' });
+      expect(parseMonetaryValue('1.23.45')).toMatchObject({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: false, isEmpty: false, errorReason: 'Separadores de milhar malformados' });
+      expect(parseMonetaryValue('12,34,56')).toMatchObject({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: false, isEmpty: false, errorReason: 'Separadores de milhar malformados' });
+      expect(parseMonetaryValue('2.501,05.00')).toMatchObject({ valor: 0, centavos: 0, formattedBr: '0,00', isValid: false, isEmpty: false, errorReason: 'Separadores de milhar malformados' });
+    });
+
+    it('rejects ambiguous single separator values with 3 digits and no decimals', () => {
+      const ambComma = parseMonetaryValue('1,234');
+      expect(ambComma.isValid).toBe(false);
+      expect(ambComma.isAmbiguous).toBe(true);
+      expect(ambComma.errorReason).toContain('ambíguo');
+
+      const ambDot = parseMonetaryValue('2.501');
+      expect(ambDot.isValid).toBe(false);
+      expect(ambDot.isAmbiguous).toBe(true);
+      expect(ambDot.errorReason).toContain('ambíguo');
+    });
+
     it('formats display currency according to Brazilian standard', () => {
       expect(formatCurrencyBr(696)).toBe('R$ 696,00');
       expect(formatCurrencyBr(10.12)).toBe('R$ 10,12');
       expect(formatCurrencyBr(-181424.58)).toBe('-R$ 181.424,58');
       expect(formatCurrencyBr(-54)).toBe('-R$ 54,00');
+      expect(formatCurrencyBr(2501.05)).toBe('R$ 2.501,05');
+      expect(formatCurrencyBr(24277.54)).toBe('R$ 24.277,54');
+      expect(formatCurrencyBr(5696.29)).toBe('R$ 5.696,29');
+    });
+
+    it('formats plain currency for table display and copy', () => {
+      expect(formatCurrencyPlain(696)).toBe('696,00');
+      expect(formatCurrencyPlain(2501.05)).toBe('2.501,05');
+      expect(formatCurrencyPlain(24277.54)).toBe('24.277,54');
+      expect(formatCurrencyPlain(-181424.58)).toBe('-181.424,58');
     });
   });
 

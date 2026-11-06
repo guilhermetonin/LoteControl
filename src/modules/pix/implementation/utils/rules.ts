@@ -109,37 +109,282 @@ export function isPixHistorico(historico: string | null | undefined): boolean {
   return /\bPIX\b|PIX/i.test(historico);
 }
 
+export interface ParsedMonetaryValue {
+  valor: number;
+  centavos: number;
+  formattedBr: string;
+  isValid: boolean;
+  isEmpty: boolean;
+  isAmbiguous?: boolean;
+  errorReason?: string;
+}
+
 /**
  * Normalizes monetary value to cents integer to avoid floating point issues,
  * and standard floating-point representation.
- * Supports Brazilian formats: '1.234,56', '-181.424,58', '696,00' or raw numbers: 696, -181424.58.
+ * Supports numbers directly, Brazilian formats ('1.234,56', '-181.424,58', '696,00', '500,41')
+ * and American/SheetJS formatted numbers ('1,234.56', '-181,424.58', '2,501.05', '500.41').
+ * Performs strict structural validation of thousand separators and rejects ambiguous or malformed numbers.
  */
-export function parseMonetaryValue(value: unknown): { valor: number; centavos: number; formattedBr: string } {
+export function parseMonetaryValue(value: unknown): ParsedMonetaryValue {
   if (value === null || value === undefined || value === '') {
-    return { valor: 0, centavos: 0, formattedBr: '0,00' };
+    return {
+      valor: 0,
+      centavos: 0,
+      formattedBr: '0,00',
+      isValid: true,
+      isEmpty: true,
+    };
   }
 
   let num: number;
 
   if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      return {
+        valor: 0,
+        centavos: 0,
+        formattedBr: '0,00',
+        isValid: false,
+        isEmpty: false,
+        errorReason: 'Valor numérico não finito (NaN ou Infinity)',
+      };
+    }
     num = value;
   } else {
     let str = String(value).trim();
-    // Remove currency symbols and non-breaking spaces
-    str = str.replace(/R\$/g, '').replace(/\s+/g, '').trim();
+    // Remove currency symbols, non-breaking spaces and regular spaces
+    str = str.replace(/R\$/gi, '').replace(/\s+/g, '').trim();
 
-    // Check if Brazilian format with comma as decimal separator (e.g. '1.234,56' or '-181.424,58')
-    if (str.includes(',')) {
-      // Remove thousands separator '.'
-      str = str.replace(/\./g, '').replace(',', '.');
-    } else if (str.includes('.') && (str.match(/\./g) || []).length > 1) {
-      // e.g. 1.234.567 -> treat last or invalid
-      str = str.replace(/\.(?=.*\.)/g, '');
+    if (!str) {
+      return {
+        valor: 0,
+        centavos: 0,
+        formattedBr: '0,00',
+        isValid: true,
+        isEmpty: true,
+      };
     }
 
-    num = parseFloat(str);
-    if (isNaN(num)) {
-      num = 0;
+    // Check negative prefixes/suffixes or accounting parentheses: -50, 50-, (50)
+    let isNegative = false;
+    if (str.startsWith('-') || str.endsWith('-')) {
+      isNegative = true;
+      str = str.replace(/-/g, '');
+    } else if (str.startsWith('(') && str.endsWith(')')) {
+      isNegative = true;
+      str = str.slice(1, -1);
+    } else if (str.startsWith('+')) {
+      str = str.slice(1);
+    }
+
+    if (!str) {
+      return {
+        valor: 0,
+        centavos: 0,
+        formattedBr: '0,00',
+        isValid: false,
+        isEmpty: false,
+        errorReason: 'Valor monetário vazio após remoção de sinais',
+      };
+    }
+
+    // Check for any invalid characters (only digits, dots, and commas allowed)
+    if (/[^\d.,]/.test(str)) {
+      return {
+        valor: 0,
+        centavos: 0,
+        formattedBr: '0,00',
+        isValid: false,
+        isEmpty: false,
+        errorReason: 'Caracteres inválidos no valor monetário',
+      };
+    }
+
+    const commaMatches = str.match(/,/g);
+    const dotMatches = str.match(/\./g);
+    const commaCount = commaMatches ? commaMatches.length : 0;
+    const dotCount = dotMatches ? dotMatches.length : 0;
+
+    let normalizedStr: string;
+
+    if (commaCount > 0 && dotCount > 0) {
+      const lastComma = str.lastIndexOf(',');
+      const lastDot = str.lastIndexOf('.');
+
+      if (lastDot > lastComma) {
+        // American / SheetJS format: 2,501.05 or 1,234,567.89 -> dot is decimal, commas are thousands
+        if (dotCount > 1) {
+          return {
+            valor: 0,
+            centavos: 0,
+            formattedBr: '0,00',
+            isValid: false,
+            isEmpty: false,
+            errorReason: 'Separadores de milhar malformados',
+          };
+        }
+        // Strict thousands regex for US format: ^\d{1,3}(,\d{3})+(\.\d{1,2})?$
+        if (!/^\d{1,3}(,\d{3})+(\.\d{1,2})?$/.test(str)) {
+          return {
+            valor: 0,
+            centavos: 0,
+            formattedBr: '0,00',
+            isValid: false,
+            isEmpty: false,
+            errorReason: 'Separadores de milhar malformados',
+          };
+        }
+        normalizedStr = str.replace(/,/g, '');
+      } else {
+        // Brazilian format: 2.501,05 or 1.234.567,89 -> comma is decimal, dots are thousands
+        if (commaCount > 1) {
+          return {
+            valor: 0,
+            centavos: 0,
+            formattedBr: '0,00',
+            isValid: false,
+            isEmpty: false,
+            errorReason: 'Separadores de milhar malformados',
+          };
+        }
+        // Strict thousands regex for BR format: ^\d{1,3}(\.\d{3})+(,\d{1,2})?$
+        if (!/^\d{1,3}(\.\d{3})+(,\d{1,2})?$/.test(str)) {
+          return {
+            valor: 0,
+            centavos: 0,
+            formattedBr: '0,00',
+            isValid: false,
+            isEmpty: false,
+            errorReason: 'Separadores de milhar malformados',
+          };
+        }
+        normalizedStr = str.replace(/\./g, '').replace(',', '.');
+      }
+    } else if (commaCount > 0) {
+      // Only commas, no dots
+      if (commaCount > 1) {
+        // Multiple commas: 1,234,567 -> commas are thousands
+        if (!/^\d{1,3}(,\d{3})+$/.test(str)) {
+          return {
+            valor: 0,
+            centavos: 0,
+            formattedBr: '0,00',
+            isValid: false,
+            isEmpty: false,
+            errorReason: 'Separadores de milhar malformados',
+          };
+        }
+        normalizedStr = str.replace(/,/g, '');
+      } else {
+        // Single comma: e.g. 500,41 or 2501,05 or 1,234
+        // If single comma is followed by exactly 3 digits (e.g. 1,234):
+        // In Caixa/banking statements, currency has 2 decimal places. A 3-digit group without other separators
+        // cannot be disambiguated safely between US thousands without decimals (1234) and non-standard decimal.
+        if (/^\d{1,3},\d{3}$/.test(str)) {
+          return {
+            valor: 0,
+            centavos: 0,
+            formattedBr: '0,00',
+            isValid: false,
+            isEmpty: false,
+            isAmbiguous: true,
+            errorReason: 'Valor monetário ambíguo (vírgula com 3 dígitos sem separador decimal definido)',
+          };
+        }
+        if (!/^\d+,\d{1,2}$/.test(str)) {
+          return {
+            valor: 0,
+            centavos: 0,
+            formattedBr: '0,00',
+            isValid: false,
+            isEmpty: false,
+            errorReason: 'Separadores de milhar malformados',
+          };
+        }
+        normalizedStr = str.replace(',', '.');
+      }
+    } else if (dotCount > 0) {
+      // Only dots, no commas
+      if (dotCount > 1) {
+        // Multiple dots: 1.234.567 -> dots are thousands
+        if (!/^\d{1,3}(\.\d{3})+$/.test(str)) {
+          return {
+            valor: 0,
+            centavos: 0,
+            formattedBr: '0,00',
+            isValid: false,
+            isEmpty: false,
+            errorReason: 'Separadores de milhar malformados',
+          };
+        }
+        normalizedStr = str.replace(/\./g, '');
+      } else {
+        // Single dot: e.g. 500.41, 2501.05 or 2.501
+        // If single dot is followed by exactly 3 digits (e.g. 2.501):
+        // Cannot safely differentiate between Brazilian thousands without decimals (2501) and US 3-decimal precision.
+        if (/^\d{1,3}\.\d{3}$/.test(str)) {
+          return {
+            valor: 0,
+            centavos: 0,
+            formattedBr: '0,00',
+            isValid: false,
+            isEmpty: false,
+            isAmbiguous: true,
+            errorReason: 'Valor monetário ambíguo (ponto com 3 dígitos sem separador decimal definido)',
+          };
+        }
+        if (!/^\d+\.\d{1,2}$/.test(str)) {
+          return {
+            valor: 0,
+            centavos: 0,
+            formattedBr: '0,00',
+            isValid: false,
+            isEmpty: false,
+            errorReason: 'Separadores de milhar malformados',
+          };
+        }
+        normalizedStr = str;
+      }
+    } else {
+      // No commas and no dots: plain integer (e.g. 696, 0, 10, 2500)
+      if (!/^\d+$/.test(str)) {
+        return {
+          valor: 0,
+          centavos: 0,
+          formattedBr: '0,00',
+          isValid: false,
+          isEmpty: false,
+          errorReason: 'Formato numérico inválido',
+        };
+      }
+      normalizedStr = str;
+    }
+
+    if (!/^\d+(\.\d{1,2})?$/.test(normalizedStr)) {
+      return {
+        valor: 0,
+        centavos: 0,
+        formattedBr: '0,00',
+        isValid: false,
+        isEmpty: false,
+        errorReason: 'Valor monetário malformado',
+      };
+    }
+
+    num = parseFloat(normalizedStr);
+    if (isNaN(num) || !Number.isFinite(num)) {
+      return {
+        valor: 0,
+        centavos: 0,
+        formattedBr: '0,00',
+        isValid: false,
+        isEmpty: false,
+        errorReason: 'Valor numérico não finito',
+      };
+    }
+    if (isNegative) {
+      num = -num;
     }
   }
 
@@ -160,6 +405,8 @@ export function parseMonetaryValue(value: unknown): { valor: number; centavos: n
     valor: finalValor,
     centavos,
     formattedBr,
+    isValid: true,
+    isEmpty: false,
   };
 }
 

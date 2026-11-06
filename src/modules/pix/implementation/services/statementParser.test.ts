@@ -56,6 +56,58 @@ describe('Statement Parser Service', () => {
     expect(tenIds.size).toBe(tens.length);
   });
 
+  it('correctly imports transactions with thousands separators and raw numbers without truncating', async () => {
+    const workbook = XLSX.utils.book_new();
+    const sheetData = [
+      ['Data Lançamento', 'Data Movimento', 'Histórico', 'Documento', 'Valor Lançamento', 'Saldo'],
+      ['20/10/2026', '20/10/2026', 'CRED PIX CHAVE', '201544', 2501.05, 1000], // Doc 201544: numeric
+      ['26/10/2026', '26/10/2026', 'CRED PIX CHAVE', '260704', '24,277.54', 2000], // Doc 260704: text US format
+      ['27/10/2026', '27/10/2026', 'CRED PIX CHAVE', '271112', '5.696,29', 3000], // Doc 271112: text BR format
+      ['20/10/2026', '20/10/2026', 'CRED PIX CHAVE', '201553', 6.15, 4000],
+      ['20/10/2026', '20/10/2026', 'CRED PIX CHAVE', '201739', '500,41', 5000],
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(sheetData);
+    // Explicitly add a number format to C2 (first data row valor)
+    ws['E2'].z = '#,##0.00';
+
+    XLSX.utils.book_append_sheet(workbook, ws, 'Extrato');
+    const bytes = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer | Uint8Array;
+    const buffer = new Uint8Array(bytes as any).buffer as ArrayBuffer;
+
+    const result = await parseStatement(buffer, 'extrato-milhar.xlsx');
+    expect(result.errors).toHaveLength(0);
+    expect(result.pixTransactions).toHaveLength(5);
+
+    const doc201544 = result.pixTransactions.find((t) => t.documento === '201544');
+    expect(doc201544).toBeDefined();
+    expect(doc201544?.valor).toBe(2501.05);
+    expect(doc201544?.valorCentavos).toBe(250105);
+    expect(doc201544?.formattedBr).toBe('2501,05');
+
+    const doc260704 = result.pixTransactions.find((t) => t.documento === '260704');
+    expect(doc260704).toBeDefined();
+    expect(doc260704?.valor).toBe(24277.54);
+    expect(doc260704?.valorCentavos).toBe(2427754);
+    expect(doc260704?.formattedBr).toBe('24277,54');
+
+    const doc271112 = result.pixTransactions.find((t) => t.documento === '271112');
+    expect(doc271112).toBeDefined();
+    expect(doc271112?.valor).toBe(5696.29);
+    expect(doc271112?.valorCentavos).toBe(569629);
+    expect(doc271112?.formattedBr).toBe('5696,29');
+
+    const doc201553 = result.pixTransactions.find((t) => t.documento === '201553');
+    expect(doc201553?.valor).toBe(6.15);
+
+    const doc201739 = result.pixTransactions.find((t) => t.documento === '201739');
+    expect(doc201739?.valor).toBe(500.41);
+
+    // Sorting order must put the largest (24277.54) at the end, not at the beginning as 24.28
+    const lastTx = result.pixTransactions[result.pixTransactions.length - 1];
+    expect(lastTx.documento).toBe('260704');
+    expect(lastTx.valor).toBe(24277.54);
+  });
+
   it('detects missing columns and displays clear error message', async () => {
     // Test with importar.csv (which has Nome, Telefone, Email, etc. but no bank columns)
     const bytes = new TextEncoder().encode('Nome,Telefone,Email\nAna,1111,ana@example.test');
@@ -92,6 +144,33 @@ describe('Statement Parser Service', () => {
     expect(indices?.historicoIndex).toBe(1);
     expect(indices?.documentoIndex).toBe(2);
     expect(indices?.headerRowIndex).toBe(1);
+  });
+
+  it('aborts parsing and collects structured error details when invalid or ambiguous monetary values are present', async () => {
+    const workbook = XLSX.utils.book_new();
+    const rows = [
+      ['Histórico', 'Documento', 'Valor Lançamento', 'Data Lançamento', 'Data Movimento', 'Saldo'],
+      ['CRED PIX CHAVE', '201544', '2,501.05', '20/10/2026', '20/10/2026', '100,00'], // valid
+      ['CRED PIX CHAVE', '201545', '1,2,3', '20/10/2026', '20/10/2026', '100,00'], // malformed thousands
+      ['CRED PIX CHAVE', '201546', '1,234', '20/10/2026', '20/10/2026', '100,00'], // ambiguous
+      ['CRED PIX CHAVE', '201547', 'INV_VAL', '20/10/2026', '20/10/2026', '100,00'], // invalid chars
+    ];
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), 'Extrato');
+    const bytes = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer | Uint8Array;
+    const buffer = new Uint8Array(bytes as any).buffer as ArrayBuffer;
+
+    const result = await parseStatement(buffer, 'extrato-invalido.xlsx');
+
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.pixTransactions).toHaveLength(0); // Zero transactions created
+    expect(result.totalValidTransactions).toBe(0);
+
+    const errorMsg = result.errors[0];
+    expect(errorMsg).toMatch(/foram encontrados 3 lançamento\(s\) PIX com valores monetários inválidos ou ambíguos/);
+    expect(errorMsg).toContain('Linha 3 (Doc: 201545');
+    expect(errorMsg).toContain('Linha 4 (Doc: 201546');
+    expect(errorMsg).toContain('Linha 5 (Doc: 201547');
+    expect(errorMsg).toContain('Verifique os dados no extrato e tente novamente');
   });
 
   it('generates consistent file hash for same content and different for different content', async () => {

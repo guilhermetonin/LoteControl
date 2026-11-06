@@ -313,6 +313,12 @@ export async function parseStatement(
   const pixTransactions: PixTransaction[] = [];
   const historicoSet = new Set<string>();
   const diaSet = new Set<string>();
+  const monetaryErrors: Array<{
+    rowNumber: number;
+    documento: string;
+    rawValor: string;
+    reason: string;
+  }> = [];
   let totalValid = 0;
 
   for (let r = headerRowIndex + 1; r < sheetRows.length; r++) {
@@ -321,7 +327,12 @@ export async function parseStatement(
 
     const rawHist = row[historicoIndex];
     const rawDoc = row[documentoIndex];
-    const rawVal = row[valorIndex];
+
+    // Check direct cell in targetSheet to prioritize raw numeric values when available (avoids SheetJS en-US text formatting)
+    const valCell = targetSheet[XLSX.utils.encode_cell({ r, c: valorIndex })];
+    const rawVal = (valCell && typeof valCell.v === 'number' && Number.isFinite(valCell.v))
+      ? valCell.v
+      : row[valorIndex];
 
     // Check if entire row is empty
     if (
@@ -354,7 +365,20 @@ export async function parseStatement(
       continue;
     }
 
-    const { valor, centavos, formattedBr } = parseMonetaryValue(rawVal);
+    const parsedVal = parseMonetaryValue(rawVal);
+    if (!parsedVal.isValid || parsedVal.isEmpty) {
+      monetaryErrors.push({
+        rowNumber: r + 1,
+        documento: documento || 'Sem documento',
+        rawValor: String(rawVal ?? ''),
+        reason: parsedVal.isEmpty
+          ? 'Valor monetário ausente'
+          : (parsedVal.errorReason || 'Valor monetário inválido'),
+      });
+      continue;
+    }
+
+    const { valor, centavos, formattedBr } = parsedVal;
     const dia = extractDia(documento);
     const horario = extractHorario(documento);
 
@@ -362,6 +386,11 @@ export async function parseStatement(
     if (dia) {
       diaSet.add(dia);
     }
+
+    const saldoCell = saldoIndex !== -1 ? targetSheet[XLSX.utils.encode_cell({ r, c: saldoIndex })] : undefined;
+    const rawSaldo = (saldoCell && typeof saldoCell.v === 'number' && Number.isFinite(saldoCell.v))
+      ? saldoCell.v
+      : (saldoIndex !== -1 && row[saldoIndex] !== undefined ? row[saldoIndex] : undefined);
 
     const tx: PixTransaction = {
       id: `tx_${r}`,
@@ -384,12 +413,38 @@ export async function parseStatement(
           ? String(row[dataMovimentoIndex]).trim()
           : undefined,
       saldo:
-        saldoIndex !== -1 && row[saldoIndex] !== undefined
-          ? parseMonetaryValue(row[saldoIndex]).valor
+        rawSaldo !== undefined && rawSaldo !== ''
+          ? parseMonetaryValue(rawSaldo).valor
           : undefined,
     };
 
     pixTransactions.push(tx);
+  }
+
+  if (monetaryErrors.length > 0) {
+    const count = monetaryErrors.length;
+    const maxListed = 5;
+    const itemsText = monetaryErrors
+      .slice(0, maxListed)
+      .map((e) => `Linha ${e.rowNumber} (Doc: ${e.documento}, Valor: "${e.rawValor}"): ${e.reason}`)
+      .join(' | ');
+    const more = count > maxListed ? ` (+${count - maxListed} outra(s) ocorrência(s))` : '';
+    const errorMsg = `Não foi possível importar a planilha: foram encontrados ${count} lançamento(s) PIX com valores monetários inválidos ou ambíguos. Detalhes: [${itemsText}${more}]. Verifique os dados no extrato e tente novamente.`;
+    errors.push(errorMsg);
+
+    return {
+      fileName,
+      fileHash,
+      sheetName: targetSheetName,
+      allSheets,
+      totalRawRows: sheetRows.length,
+      totalValidTransactions: 0,
+      pixTransactions: [],
+      availableHistoricos: [],
+      initialSelectedHistoricos: [],
+      availableDias: [],
+      errors,
+    };
   }
 
   // Order PIX transactions ascending by monetary value (numeric centavos),

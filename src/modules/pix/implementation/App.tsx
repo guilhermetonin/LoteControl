@@ -443,7 +443,20 @@ export function App({ workspaceId = 'standalone', isActive = true }: PixAppProps
 
   return (
     <div id={`pix-instance-${workspaceId}`} data-module-ready="pix" className="h-full w-full overflow-hidden bg-white text-slate-900 flex flex-col font-sans select-none">
-      {parseResult && errors.length > 0 && <ToastNotification toast={{ tone: errors[0].includes('Planilha Protege') ? 'warning' : 'danger', text: errors[0].includes('Planilha Protege') ? 'Esta planilha pertence ao módulo Protege. Importe-a em Protege.' : `Não foi possível processar a planilha: ${errors[0]}`, onClose: () => setErrors([]) }} onDismiss={() => setErrors([])} />}
+      {parseResult && errors.length > 0 && (
+        <ToastNotification
+          toast={{
+            tone: errors[0].includes('Planilha Protege') ? 'warning' : 'danger',
+            text: errors[0].includes('Planilha Protege')
+              ? 'Esta planilha pertence ao módulo Protege. Importe-a em Protege.'
+              : errors[0].startsWith('Não foi possível')
+                ? errors[0]
+                : `Não foi possível processar a planilha: ${errors[0]}`,
+            onClose: () => setErrors([]),
+          }}
+          onDismiss={() => setErrors([])}
+        />
+      )}
       <Header
         currentSection={currentSection}
         onNavigate={setCurrentSection}

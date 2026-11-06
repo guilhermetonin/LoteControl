@@ -94,7 +94,11 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
           showErrorToast
             ? {
                 tone: errors[0].includes('Planilha Protege') ? 'warning' : 'danger',
-                text: errors[0].includes('Planilha Protege') ? 'Esta planilha pertence ao módulo Protege. Importe-a em Protege.' : `Não foi possível processar a planilha: ${errors[0]}`,
+                text: errors[0].includes('Planilha Protege')
+                  ? 'Esta planilha pertence ao módulo Protege. Importe-a em Protege.'
+                  : errors[0].startsWith('Não foi possível')
+                    ? errors[0]
+                    : `Não foi possível processar a planilha: ${errors[0]}`,
                 onClose: () => setDismissedErrorKey(errorKey),
               }
             : null

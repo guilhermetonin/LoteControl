@@ -46,5 +46,24 @@ describe('End-to-End Statement Processing on real Caixa Statement', () => {
       expect(line).toMatch(/^-?\d+,\d{2}$/);
       expect(line).not.toContain('R$');
     });
+
+    // 6. Verify real high-value transactions in original-caixa.xls are NOT truncated to decimals
+    // (Documents in fixture with values >= R$ 1.000,00)
+    const doc011712 = parsed.pixTransactions.find((tx) => tx.documento === '011712');
+    expect(doc011712).toBeDefined();
+    expect(doc011712?.valor).toBe(4151.51);
+    expect(doc011712?.valorCentavos).toBe(415151);
+    expect(doc011712?.formattedBr).toBe('4151,51');
+
+    const doc011917 = parsed.pixTransactions.find((tx) => tx.documento === '011917');
+    expect(doc011917).toBeDefined();
+    expect(doc011917?.valor).toBe(1306.31);
+    expect(doc011917?.valorCentavos).toBe(130631);
+
+    const doc052034 = parsed.pixTransactions.find((tx) => tx.documento === '052034');
+    expect(doc052034).toBeDefined();
+    expect(doc052034?.valor).toBe(44444.44);
+    expect(doc052034?.valorCentavos).toBe(4444444);
+    expect(doc052034?.formattedBr).toBe('44444,44');
   });
 });
