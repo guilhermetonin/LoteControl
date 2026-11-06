@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import {
-  AlertTriangle, ArrowDownUp, CalendarDays, Check, ChevronLeft, ChevronRight, Clock3,
+  AlertTriangle, ArrowDownUp, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3,
   Cloud, Download, FileJson, FileSpreadsheet, Plus, RefreshCw, Search, Settings, Settings2, Trash2, Upload, UserRoundPen, X,
 } from 'lucide-react';
 import { LOTERICAS } from '../protege/logic/constants.js';
@@ -20,15 +20,17 @@ const reportLotericaOptions: LotericaOption[] = companies.map((name, index) => (
   cor: companyDetails[index].cor,
 }));
 const monthLabels = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+const shortMonthLabels = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN', 'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ'];
+const currentYear = new Date().getFullYear();
 const brl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
 type Section = 'operacao' | 'historico' | 'sincronizacao';
-type Draft = { id?: string; tipo: 'falta' | 'sobra'; dia: string; valor: string; funcionario: string; cliente: string; status: string };
+type Draft = { id?: string; tipo: 'falta' | 'sobra'; dia: string; mes: string; valor: string; funcionario: string; cliente: string; status: string };
 
 const PADRAO_COLUNAS = ['Loterica', 'Ano', 'Mes', 'Categoria', 'Dia', 'Descricao', 'Funcionaria', 'Valor', 'Conferido'];
 
 const INSTRUCOES_ROWS = [
   { Coluna: 'A', Campo: 'Loterica', Obrigatório: 'Sim', 'Valores aceitos': 'CAÇULA, SORTE GRANDE ou PUPINS', Descrição: 'Nome da lotérica cadastrada no sistema.' },
-  { Coluna: 'B', Campo: 'Ano', Obrigatório: 'Sim', 'Valores aceitos': 'Ano com 4 dígitos (ex: 2026)', Descrição: 'Ano do lançamento.' },
+  { Coluna: 'B', Campo: 'Ano', Obrigatório: 'Sim', 'Valores aceitos': 'Ano com 4 dígitos (ex: ano atual)', Descrição: 'Ano do lançamento.' },
   { Coluna: 'C', Campo: 'Mes', Obrigatório: 'Sim', 'Valores aceitos': '1 a 12', Descrição: 'Mês numérico do lançamento.' },
   { Coluna: 'D', Campo: 'Categoria', Obrigatório: 'Sim', 'Valores aceitos': 'FALTANDO ou SOBRANDO', Descrição: 'Categoria do PIX.' },
   { Coluna: 'E', Campo: 'Dia', Obrigatório: 'Sim', 'Valores aceitos': '1 a 31 (conforme o mês)', Descrição: 'Dia do lançamento no mês informado.' },
@@ -39,10 +41,10 @@ const INSTRUCOES_ROWS = [
 ];
 
 const EXEMPLO_ROWS = [
-  { Loterica: 'CAÇULA', Ano: 2026, Mes: 10, Categoria: 'FALTANDO', Dia: 5, Descricao: 'João Silva - Diferença de caixa', Funcionaria: 'Ana', Valor: 150.00, Conferido: 'TRUE' },
-  { Loterica: 'CAÇULA', Ano: 2026, Mes: 10, Categoria: 'SOBRANDO', Dia: 5, Descricao: 'Maria Santos - Depósito PIX', Funcionaria: 'Beatriz', Valor: 85.50, Conferido: 'FALSE' },
-  { Loterica: 'SORTE GRANDE', Ano: 2026, Mes: 10, Categoria: 'FALTANDO', Dia: 12, Descricao: 'Comprovante não localizado', Funcionaria: 'Camila', Valor: 200.00, Conferido: 'FALSE' },
-  { Loterica: 'PUPINS', Ano: 2026, Mes: 10, Categoria: 'SOBRANDO', Dia: 18, Descricao: 'Fernanda Costa - Avulso PIX', Funcionaria: 'Daniela', Valor: 50.00, Conferido: 'TRUE' },
+  { Loterica: 'CAÇULA', Ano: currentYear, Mes: 10, Categoria: 'FALTANDO', Dia: 5, Descricao: 'João Silva - Diferença de caixa', Funcionaria: 'Ana', Valor: 150.00, Conferido: 'TRUE' },
+  { Loterica: 'CAÇULA', Ano: currentYear, Mes: 10, Categoria: 'SOBRANDO', Dia: 5, Descricao: 'Maria Santos - Depósito PIX', Funcionaria: 'Beatriz', Valor: 85.50, Conferido: 'FALSE' },
+  { Loterica: 'SORTE GRANDE', Ano: currentYear, Mes: 10, Categoria: 'FALTANDO', Dia: 12, Descricao: 'Comprovante não localizado', Funcionaria: 'Camila', Valor: 200.00, Conferido: 'FALSE' },
+  { Loterica: 'PUPINS', Ano: currentYear, Mes: 10, Categoria: 'SOBRANDO', Dia: 18, Descricao: 'Fernanda Costa - Avulso PIX', Funcionaria: 'Daniela', Valor: 50.00, Conferido: 'TRUE' },
 ];
 
 function amountCents(raw: string) {
@@ -57,6 +59,15 @@ function amountCents(raw: string) {
 }
 function dateString(year: number, month: number, day: number) { return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`; }
 function daysInMonth(year: number, month: number) { return new Date(year, month, 0).getDate(); }
+function bulkYearKey(year: number) { return `y:${year}`; }
+function bulkMonthKey(year: number, month: number) { return `m:${year}:${month}`; }
+function bulkDayKey(year: number, month: number, day: number) { return `d:${year}:${month}:${day}`; }
+function parseBulkPeriodKey(key: string) {
+  const [kind, year, month, day] = key.split(':').map((part) => part === 'y' || part === 'm' || part === 'd' ? part : Number(part));
+  if (kind === 'y') return { year: Number(year) };
+  if (kind === 'm') return { year: Number(year), month: Number(month) };
+  return { year: Number(year), month: Number(month), days: [Number(day)] };
+}
 function valueDraft(value: any) { return (Number(value || 0)).toFixed(2).replace('.', ','); }
 
 export interface NormalizedDiffItem {
@@ -222,6 +233,10 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
   const [section, setSection] = useState<Section>('operacao');
   const [draft, setDraft] = useState<Draft | null>(null);
   const [bulk, setBulk] = useState<any>(null);
+  const [moveRows, setMoveRows] = useState<any[] | null>(null);
+  const [moveCompany, setMoveCompany] = useState(company);
+  const [moveMonth, setMoveMonth] = useState(now.getMonth() + 1);
+  const [moveYear, setMoveYear] = useState(now.getFullYear());
   const [historyRows, setHistoryRows] = useState<any[]>([]);
   const [historySearch, setHistorySearch] = useState('');
   const [historyPage, setHistoryPage] = useState(0);
@@ -502,8 +517,12 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
   useEffect(() => {
     if (!bulk || !api) return;
     let current = true;
-    const dia = bulk.scope === 'day' ? Number(bulk.day || 1) : bulk.scope === 'filter' ? (dayFilter || 'all') : 'all';
-    const params = { loterica: company, ano: year, mes: month, dia, tipo: bulk.category || 'ambos' };
+    const periods = (bulk.selectedKeys || []).map(parseBulkPeriodKey);
+    if (!periods.length) {
+      setBulk((value: any) => value ? { ...value, params: null, preview: { count: 0, totalValor: 0, related: { tombstonesToQueue: 0, unresolvedConflicts: 0, snapshotsPreserved: true } }, loadingPreview: false } : value);
+      return () => { current = false; };
+    }
+    const params = { loterica: company, periods, tipo: bulk.category || 'ambos' };
     setBulk((value: any) => value ? { ...value, params, preview: null, loadingPreview: true } : value);
     void api.previewBulkDelete(params).then((preview) => {
       if (current) setBulk((value: any) => value ? { ...value, preview, loadingPreview: false } : value);
@@ -514,7 +533,7 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
       }
     });
     return () => { current = false; };
-  }, [api, company, year, month, dayFilter, bulk?.scope, bulk?.category, bulk?.day]);
+  }, [api, company, bulk?.category, bulk?.selectedKeys?.join('|')]);
 
   const sortedRows = useMemo(() => [...rows].sort((a, b) => Number(a.dia) - Number(b.dia) || Number(b.valor) - Number(a.valor)), [rows]);
 
@@ -554,28 +573,30 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
 
   const openNew = useCallback((type: 'falta' | 'sobra') => {
     const suggestedDay = dayFilter || (year === now.getFullYear() && month === now.getMonth() + 1 ? now.getDate() : 1);
-    setDraft({ tipo: type, dia: String(Math.min(suggestedDay, daysInMonth(year, month))), valor: '', funcionario: '', cliente: '', status: 'pendente' });
+    setDraft({ tipo: type, dia: String(Math.min(suggestedDay, daysInMonth(year, month))), mes: String(month), valor: '', funcionario: '', cliente: '', status: 'pendente' });
   }, [dayFilter, year, month]);
 
   const openEdit = useCallback((row: any) => {
-    setDraft({ id: row.id, tipo: row.tipo, dia: String(row.dia), valor: valueDraft(row.valor), funcionario: row.funcionario || '', cliente: row.cliente || '', status: row.status || 'pendente' });
-  }, []);
+    setDraft({ id: row.id, tipo: row.tipo, dia: String(row.dia), mes: String(row.mes || month), valor: valueDraft(row.valor), funcionario: row.funcionario || '', cliente: row.cliente || '', status: row.status || 'pendente' });
+  }, [month]);
 
   const saveDraft = useCallback(async (event: React.FormEvent) => {
     event.preventDefault();
     if (!draft || !api) return;
     const dia = Number(draft.dia);
+    const mes = Number(draft.mes);
     const cents = amountCents(draft.valor);
-    if (!Number.isInteger(dia) || dia < 1 || dia > daysInMonth(year, month)) { setError(`O mês selecionado tem ${daysInMonth(year, month)} dias.`); return; }
+    if (!Number.isInteger(mes) || mes < 1 || mes > 12) { setError('Selecione um mês válido.'); return; }
+    if (!Number.isInteger(dia) || dia < 1 || dia > daysInMonth(year, mes)) { setError(`O mês selecionado tem ${daysInMonth(year, mes)} dias.`); return; }
     if (!Number.isSafeInteger(cents) || cents <= 0) { setError('Informe um valor maior que zero.'); return; }
     const payload = {
-      loterica: company, ano: year, mes: month, dia, data_formatada: dateString(year, month, dia),
+      loterica: company, ano: year, mes, dia, data_formatada: dateString(year, mes, dia),
       valor: cents / 100, tipo: draft.tipo, funcionario: draft.funcionario.trim(), cliente: draft.cliente.trim(),
       status: draft.status,
     };
     const result = await action(() => draft.id ? api.updateLancamento(draft.id, payload) : api.addLancamento(payload), draft.id ? 'Lançamento atualizado.' : 'Lançamento incluído.');
     if (result !== null) setDraft(null);
-  }, [draft, api, company, year, month, action]);
+  }, [draft, api, company, year, action]);
 
   const saveInlineEdit = useCallback(async (row: any, values: { dia: string; valor: string; cliente: string; funcionario: string }) => {
     if (!api) return false;
@@ -833,7 +854,7 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
         // 2. Ano
         const anoNum = Number(row[anoIdx]);
         if (!Number.isInteger(anoNum) || anoNum < 1900 || anoNum > 2100) {
-          errors.push(`Linha ${lineNum}: Ano "${row[anoIdx]}" inválido. Deve ser um ano com 4 dígitos (ex: 2026).`);
+          errors.push(`Linha ${lineNum}: Ano "${row[anoIdx]}" inválido. Deve ser um ano com 4 dígitos.`);
         }
 
         // 3. Mês
@@ -989,9 +1010,82 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
     }
   }
 
-  function showBulkPreview(scope: 'day' | 'month' | 'filter') {
+  async function showBulkPreview(_scope: 'day' | 'month' | 'filter') {
     if (!api) return;
-    setBulk({ scope, category: 'ambos', day: String(dayFilter || 1), params: null, preview: null, loadingPreview: true });
+    try {
+      const tree = await api.getBulkDeletePeriods(company);
+      const today = new Date();
+      const currentHasRows = tree.some((entry: any) => Number(entry.year) === today.getFullYear()
+        && entry.months?.some((item: any) => Number(item.month) === today.getMonth() + 1));
+      setBulk({ tree, selectedKeys: currentHasRows ? [bulkMonthKey(today.getFullYear(), today.getMonth() + 1)] : [],
+        expandedYears: [today.getFullYear()], expandedMonths: [], category: 'ambos', params: null, preview: null,
+        loadingPreview: false, confirmationText: '' });
+    } catch (reason: any) {
+      setError(reason?.message || 'Não foi possível carregar os períodos disponíveis para exclusão.');
+    }
+  }
+
+  function toggleBulkYear(yearValue: number) {
+    setBulk((value: any) => {
+      if (!value) return value;
+      const keys: string[] = [...value.selectedKeys];
+      const yearKey = bulkYearKey(yearValue);
+      const yearTree = value.tree.find((entry: any) => Number(entry.year) === yearValue);
+      const alreadySelected = keys.includes(yearKey) || Boolean(yearTree?.months?.length) && yearTree.months.every((monthEntry: any) => {
+        const monthKey = bulkMonthKey(yearValue, Number(monthEntry.month));
+        const dayKeys = (monthEntry.days || []).map((item: any) => bulkDayKey(yearValue, Number(monthEntry.month), Number(item.day)));
+        return keys.includes(monthKey) || dayKeys.length > 0 && dayKeys.every((key: string) => keys.includes(key));
+      });
+      const next = keys.filter((key) => key !== yearKey && !key.startsWith(`m:${yearValue}:`) && !key.startsWith(`d:${yearValue}:`));
+      if (!alreadySelected) next.push(yearKey);
+      return { ...value, selectedKeys: next };
+    });
+  }
+
+  function toggleBulkMonth(yearValue: number, monthValue: number) {
+    setBulk((value: any) => {
+      if (!value) return value;
+      const keys: string[] = [...value.selectedKeys];
+      const monthKey = bulkMonthKey(yearValue, monthValue);
+      const yearKey = bulkYearKey(yearValue);
+      const yearSelected = keys.includes(yearKey);
+      const yearTree = value.tree.find((entry: any) => Number(entry.year) === yearValue);
+      const monthTree = yearTree?.months?.find((entry: any) => Number(entry.month) === monthValue);
+      const children = (monthTree?.days || []).map((item: any) => bulkDayKey(yearValue, monthValue, Number(item.day)));
+      const monthSelected = keys.includes(monthKey) || children.length > 0 && children.every((key: string) => keys.includes(key));
+      let next = keys.filter((key) => key !== monthKey && !key.startsWith(`d:${yearValue}:${monthValue}:`));
+      if (yearSelected) {
+        next = next.filter((key) => key !== yearKey);
+        for (const sibling of yearTree?.months || []) if (Number(sibling.month) !== monthValue) next.push(bulkMonthKey(yearValue, Number(sibling.month)));
+      } else if (!monthSelected) next.push(monthKey);
+      return { ...value, selectedKeys: [...new Set(next)] };
+    });
+  }
+
+  function toggleBulkDay(yearValue: number, monthValue: number, dayValue: number) {
+    setBulk((value: any) => {
+      if (!value) return value;
+      const keys: string[] = [...value.selectedKeys];
+      const yearKey = bulkYearKey(yearValue);
+      const monthKey = bulkMonthKey(yearValue, monthValue);
+      const dayKey = bulkDayKey(yearValue, monthValue, dayValue);
+      const yearTree = value.tree.find((entry: any) => Number(entry.year) === yearValue);
+      const monthTree = yearTree?.months?.find((entry: any) => Number(entry.month) === monthValue);
+      const days: number[] = (monthTree?.days || []).map((item: any) => Number(item.day));
+      const yearSelected = keys.includes(yearKey);
+      const monthSelected = yearSelected || keys.includes(monthKey) || days.length > 0 && days.every((day) => keys.includes(bulkDayKey(yearValue, monthValue, day)));
+      let next = keys.filter((key) => key !== yearKey && key !== monthKey && !key.startsWith(`d:${yearValue}:${monthValue}:`));
+      if (yearSelected) {
+        for (const sibling of yearTree?.months || []) {
+          const siblingMonth = Number(sibling.month);
+          if (siblingMonth !== monthValue) next.push(bulkMonthKey(yearValue, siblingMonth));
+          else for (const item of sibling.days || []) if (Number(item.day) !== dayValue) next.push(bulkDayKey(yearValue, siblingMonth, Number(item.day)));
+        }
+      } else if (monthSelected) {
+        for (const day of days) if (day !== dayValue) next.push(bulkDayKey(yearValue, monthValue, day));
+      } else if (!keys.includes(dayKey)) next.push(dayKey);
+      return { ...value, selectedKeys: [...new Set(next)] };
+    });
   }
 
   async function runBulkDelete() {
@@ -999,6 +1093,13 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
     if (!bulk.preview) return;
     const count = bulk.preview?.count || 0;
     if (!count) { setBulk(null); return; }
+    const needsStrongConfirmation = count >= 100 || bulk.selectedKeys.length >= 4 || bulk.selectedKeys.some((key: string) => key.startsWith('y:'));
+    if (needsStrongConfirmation && bulk.confirmationText !== 'EXCLUIR') {
+      setError('Para esta exclusão maior, digite EXCLUIR no campo de confirmação.');
+      return;
+    }
+    const affected = `${count} lançamento(s), ${bulk.preview.related?.unresolvedConflicts || 0} conflito(s) pendente(s) relacionado(s) e ${bulk.preview.related?.tombstonesToQueue || count} tombstone(s) de sincronização. Os snapshots históricos serão mantidos.`;
+    if (!window.confirm(`Confirmar exclusão dos períodos selecionados de ${company}?\n\n${affected}\n\nA exclusão ativa será sincronizada e poderá ser restaurada pelo backup local validado.`)) return;
     const result = await action(() => api.executeBulkDelete(bulk.params), 'Exclusão em massa registrada e sincronizada.');
     if (result) setBulk(null);
   }
@@ -1053,6 +1154,14 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
   async function clearDemoData() {
     if (!api || !window.confirm(`Remover os dados marcados como demonstração de ${company}? Lançamentos reais não serão removidos.`)) return;
     await action(() => api.clearDemo(company), 'Dados de demonstração removidos.');
+  }
+
+  async function executeMoveRows() {
+    if (!api || !moveRows?.length) return;
+    const summary = `${moveRows.length} lançamento(s) de ${company} para ${moveCompany}, ${monthLabels[moveMonth - 1]} (${moveMonth})/${moveYear}`;
+    if (!window.confirm(`Confirmar movimentação?\n\n${summary}\n\nOs registros manterão valores, status, funcionários e descrições.`)) return;
+    const result = await action(() => api.moveLancamentos(moveRows.map((row) => String(row.id)), { loterica: moveCompany, ano: moveYear, mes: moveMonth }), `${moveRows.length} lançamento(s) movimentado(s).`);
+    if (result !== null) setMoveRows(null);
   }
 
   async function compareVersions() {
@@ -1132,30 +1241,11 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
         {section !== 'historico' && (
           <div className="lc-menu-row rp-context-bar">
             <div className="lc-menu-group">
-              <div className="rp-year-control">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setYear((value) => value - 1);
-                    setDayFilter(null);
-                  }}
-                  aria-label="Ano anterior"
-                >
-                  <ChevronLeft size={15} />
-                </button>
+              <div className="rp-year-control" role="group" aria-label="Ano do relatório">
+                <button type="button" onClick={() => { setYear((value) => value - 1); setDayFilter(null); }} aria-label="Ano anterior"><ChevronLeft size={15} /></button>
                 <strong>{year}</strong>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setYear((value) => value + 1);
-                    setDayFilter(null);
-                  }}
-                  aria-label="Próximo ano"
-                >
-                  <ChevronRight size={15} />
-                </button>
+                <button type="button" onClick={() => { setYear((value) => value + 1); setDayFilter(null); }} aria-label="Próximo ano"><ChevronRight size={15} /></button>
               </div>
-
               <nav className="rp-months" aria-label="Mês do relatório">
                 {monthLabels.map((name, index) => (
                   <button
@@ -1166,9 +1256,9 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
                       setMonth(index + 1);
                       setDayFilter(null);
                     }}
-                    title={name}
+                    title={`${name} (${index + 1}) / ${year}`}
                   >
-                    {name.slice(0, 3).toLocaleUpperCase('pt-BR')}
+                    {shortMonthLabels[index]} ({index + 1})
                   </button>
                 ))}
               </nav>
@@ -1189,8 +1279,8 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
       <div className="rp-content">
         {section !== 'historico' && <>
           {loading ? <div className="rp-loading"><span className="rp-spinner" />Carregando lançamentos…</div> : <div className="rp-ledgers">
-            <Ledger title="PIX FALTANDO" kind="falta" entries={faltas} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onMarkAsConferido={handleMarkAsConferido} onDelete={handleDelete} isActive={isActive} />
-            <Ledger title="PIX SOBRANDO" kind="sobra" entries={sobras} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onMarkAsConferido={handleMarkAsConferido} onDelete={handleDelete} isActive={isActive} />
+            <Ledger title="PIX FALTANDO" kind="falta" entries={faltas} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onMarkAsConferido={handleMarkAsConferido} onDelete={handleDelete} onMoveRows={(items: any[]) => { const current = new Date(); setMoveRows(items); setMoveCompany(company); setMoveMonth(current.getMonth() + 1); setMoveYear(current.getFullYear()); }} isActive={isActive} />
+            <Ledger title="PIX SOBRANDO" kind="sobra" entries={sobras} onEdit={openEdit} onInlineSave={saveInlineEdit} onToggleStatus={toggleRowStatus} onMarkAsConferido={handleMarkAsConferido} onDelete={handleDelete} onMoveRows={(items: any[]) => { const current = new Date(); setMoveRows(items); setMoveCompany(company); setMoveMonth(current.getMonth() + 1); setMoveYear(current.getFullYear()); }} isActive={isActive} />
           </div>}
         </>}
 
@@ -1198,7 +1288,14 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
           <div className="rp-section-heading"><div><p className="rp-eyebrow">VERSÕES IMUTÁVEIS</p><h2>Histórico e restauração</h2><span>Restaurar cria uma nova versão e preserva as anteriores.</span></div><label className="rp-search"><Search size={14} /><input value={historySearch} onChange={(event) => { setHistorySearch(event.target.value); setHistoryPage(0); }} placeholder="Buscar resumo ou dispositivo" /></label></div>
           <div className="rp-compare-bar"><span>Comparar versões deste período</span><select value={firstVersion} onChange={(event) => setFirstVersion(event.target.value)}><option value="">Versão inicial</option>{historyRows.map((item) => <option value={item.version_id} key={`a-${item.id}`}>v{item.version_num} · {new Date(item.created_at).toLocaleString('pt-BR')}</option>)}</select><ArrowDownUp size={14} /><select value={secondVersion} onChange={(event) => setSecondVersion(event.target.value)}><option value="">Versão final</option>{historyRows.map((item) => <option value={item.version_id} key={`b-${item.id}`}>v{item.version_num} · {new Date(item.created_at).toLocaleString('pt-BR')}</option>)}</select><button type="button" className="rp-button rp-button-outline" disabled={!firstVersion || !secondVersion} onClick={() => void compareVersions()}>Comparar</button></div>
           {comparison && <div className="rp-comparison"><div><strong>v{comparison.first.version} → v{comparison.second.version}</strong><button type="button" onClick={() => setComparison(null)} aria-label="Fechar comparação"><X size={13} /></button></div><p>{comparison.added.length} adicionado(s) · {comparison.removed.length} removido(s) · {comparison.changed.length} alterado(s)</p><ul>{[...comparison.added.map((item: any) => ({ type: 'Adicionado', item })), ...comparison.removed.map((item: any) => ({ type: 'Removido', item })), ...comparison.changed.map((item: any) => ({ type: 'Alterado', item: item.after }))].slice(0, 30).map((entry: any, index: number) => <li key={`${entry.type}-${entry.item?.id}-${index}`}><b>{entry.type}</b> · Dia {entry.item?.dia} · {brl.format(entry.item?.valor || 0)} · {entry.item?.funcionario || 'Sem funcionário'}</li>)}</ul></div>}
-          <div className="rp-history-list">{visibleHistory.map((item) => <article key={item.id} className="rp-version-row"><div className="rp-version-number">v{item.version_num}</div><div className="rp-version-copy"><strong>{item.summary || 'Alteração sincronizada'}</strong><span>{new Date(item.created_at).toLocaleString('pt-BR')} · {item.device_name || 'Dispositivo não identificado'}{item.user_email ? ` · ${item.user_email}` : ''}</span></div><button type="button" className="rp-button rp-button-outline" onClick={() => { if (window.confirm(`Restaurar v${item.version_num}? O Relatório criará uma nova versão com esse conteúdo.`)) void action(() => api!.restoreVersion(company, year, month, item.version_id), 'Restauração criada como nova versão.'); }}>Restaurar</button></article>)}{!visibleHistory.length && <div className="rp-empty">Nenhuma versão encontrada para este período.</div>}</div>
+          <div className="rp-history-list">{visibleHistory.map((item) => {
+            const remoteUnavailable = Number(item.remote_available) === 0;
+            const hasLocalCopy = item.local_available === true;
+            const canRestore = !remoteUnavailable || hasLocalCopy;
+            const restoreLabel = !canRestore ? 'Indisponível' : remoteUnavailable ? 'Restaurar local' : 'Restaurar';
+            const restoreTitle = !canRestore ? 'O snapshot não está no Drive nem possui cópia local.' : remoteUnavailable ? 'Usa a cópia histórica local; o arquivo remoto foi podado.' : undefined;
+            return <article key={item.id} className="rp-version-row"><div className="rp-version-number">v{item.version_num}</div><div className="rp-version-copy"><strong>{item.summary || 'Alteração sincronizada'}</strong><span>{new Date(item.created_at).toLocaleString('pt-BR')} · {item.device_name || 'Dispositivo não identificado'}{item.user_email ? ` · ${item.user_email}` : ''}</span></div><button type="button" className="rp-button rp-button-outline" disabled={!canRestore} title={restoreTitle} onClick={() => { if (window.confirm(`Restaurar v${item.version_num}? O Relatório criará uma nova versão com esse conteúdo.`)) void action(() => api!.restoreVersion(company, year, month, item.version_id), 'Restauração criada como nova versão.'); }}>{restoreLabel}</button></article>;
+          })}{!visibleHistory.length && <div className="rp-empty">Nenhuma versão encontrada para este período.</div>}</div>
           <div className="rp-pagination"><span>{filteredHistory.length} versão(ões)</span><div><button type="button" disabled={!historyPage} onClick={() => setHistoryPage((page) => page - 1)} aria-label="Página anterior"><ChevronLeft size={15} /></button><span>{historyPage + 1} / {historyPageCount}</span><button type="button" disabled={historyPage + 1 >= historyPageCount} onClick={() => setHistoryPage((page) => page + 1)} aria-label="Próxima página"><ChevronRight size={15} /></button></div></div>
         </section>}
 
@@ -1251,7 +1348,6 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
             <div className="rp-settings-card-heading danger"><AlertTriangle size={15} /><strong>GERENCIAMENTO DE DADOS</strong><span>ATENÇÃO</span></div>
             <p>Operações de remoção e limpeza. Todas as ações criam backup automático verificado via <code>PRAGMA integrity_check</code> antes de qualquer exclusão.</p>
             <div className="rp-maintenance-row"><span><strong>Exclusão em Massa</strong><small>Excluir múltiplos registros por dia, mês ou filtro com tombstones</small></span><button type="button" onClick={() => void showBulkPreview('month')}><Trash2 size={14} /> Abrir Exclusão em Massa…</button></div>
-            <div className="rp-maintenance-row"><span><strong>Limpeza de Dados Seed</strong><small>Remove registros de teste/demonstração da lotérica ativa</small></span><button type="button" onClick={() => void clearDemoData()}>Limpar Dados Seed</button></div>
             {officialBase && <small className="rp-base-note">Base oficial preservada · {officialBase.version || officialBase.version_num || 'ativa'}</small>}
           </section>
           <section className="rp-sync-card rp-drive-card">
@@ -1288,13 +1384,13 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
             <header><div><p className="rp-eyebrow">GOOGLE DRIVE</p><h2 id="rp-credentials-title">Sincronização Google Drive</h2><span>Compartilhamento de dados com a conta já configurada para o Relatório</span></div><button type="button" className="rp-icon-button" onClick={() => setCredentialsOpen(false)} aria-label="Fechar configurações e credenciais"><X size={16} /></button></header>
             <div className="rp-credentials-status"><div><span>Estado da sincronização</span><strong>{syncStatus.status || 'Não configurado'}</strong></div><div><span>Conta Google</span><strong>{syncStatus.userEmail || 'Nenhuma conta conectada'}</strong></div><div><span>Última sincronização</span><strong>{syncStatus.lastSyncTime ? new Date(syncStatus.lastSyncTime).toLocaleString('pt-BR') : 'Nunca'}</strong></div><div><span>Alterações locais pendentes</span><strong>{syncStatus.pendingCount || 0}</strong></div></div>
             <form className="rp-credentials-form" onSubmit={(event) => void saveDriveConfig(event)}>
-              <div className="rp-credentials-form-heading"><strong>Credenciais OAuth 2.0 (Google Cloud)</strong><button type="button" className="rp-button rp-button-outline" onClick={() => void importDriveCredentials()}><FileJson size={14} /> Importar JSON</button></div>
+              <div className="rp-credentials-form-heading"><strong>Credenciais OAuth 2.0 (Google Cloud)</strong><button type="button" className="rp-button rp-button-outline" onClick={() => void importDriveCredentials()}>Importar JSON</button></div>
               <label>Client ID<input value={syncConfig.clientId || ''} onChange={(event) => setSyncConfig({ ...syncConfig, clientId: event.target.value })} autoComplete="off" /></label>
               <label>Client Secret<input type="password" value={syncConfig.clientSecret || ''} onChange={(event) => setSyncConfig({ ...syncConfig, clientSecret: event.target.value })} autoComplete="new-password" /></label>
               <label className="span2">Identificador da Pasta Compartilhada (Folder ID)<input value={syncConfig.folderId || ''} onChange={(event) => setSyncConfig({ ...syncConfig, folderId: event.target.value })} placeholder="Cole o ID da pasta ou link compartilhado" /></label>
               <label>Intervalo de sincronização (segundos)<select value={syncConfig.syncIntervalSec || 5} onChange={(event) => setSyncConfig({ ...syncConfig, syncIntervalSec: Number(event.target.value) })}>{[5, 10, 15, 30, 60].map((seconds) => <option value={seconds} key={seconds}>{seconds} segundos{seconds === 5 ? ' (Padrão)' : ''}</option>)}</select></label>
               <label className="rp-check"><input type="checkbox" checked={Boolean(syncConfig.autoSync)} onChange={(event) => setSyncConfig({ ...syncConfig, autoSync: event.target.checked })} /> Sincronizar automaticamente</label>
-              <div className="rp-credentials-actions"><button type="submit" className="rp-button rp-button-primary" disabled={busy}><Settings2 size={14} /> Salvar Dados</button><button type="button" className="rp-button rp-button-outline" onClick={() => void api?.startSyncAuth().then(refreshSync).catch((reason: any) => setError(reason?.message || String(reason)))}><Cloud size={14} /> Conectar Conta Google</button><button type="button" className="rp-button rp-button-outline" onClick={() => void api?.syncNow().then(refreshSync).catch((reason: any) => setError(reason?.message || String(reason)))}><RefreshCw size={14} /> Sincronizar Agora</button><button type="button" className="rp-button rp-button-danger" onClick={() => window.confirm('Desconectar a conta Google neste computador?') && void api?.disconnectSync().then(refreshSync)}><X size={14} /> Desconectar</button></div>
+              <div className="rp-credentials-actions"><button type="submit" className="rp-button rp-button-primary" disabled={busy}><Settings2 size={14} /> Salvar</button><button type="button" className="rp-button rp-button-outline" onClick={() => void api?.startSyncAuth().then(refreshSync).catch((reason: any) => setError(reason?.message || String(reason)))}><Cloud size={14} /> Conectar Google</button><button type="button" className="rp-button rp-button-outline" onClick={() => void api?.syncNow().then(refreshSync).catch((reason: any) => setError(reason?.message || String(reason)))}><RefreshCw size={14} /> Sincronizar agora</button><button type="button" className="rp-button rp-button-danger" onClick={() => window.confirm('Desconectar a conta Google neste computador?') && void api?.disconnectSync().then(refreshSync)}><X size={14} /> Desconectar</button></div>
             </form>
           </section></div>}
         </>}
@@ -1303,9 +1399,11 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
       {draft && <div className="rp-overlay" onMouseDown={(event) => event.target === event.currentTarget && setDraft(null)}><form className="rp-entry-modal rp-quick-entry-modal" role="dialog" aria-modal="true" aria-labelledby="rp-entry-title" onSubmit={(event) => void saveDraft(event)}>
         <header><div><h2 id="rp-entry-title">{draft.id ? 'Editar Lançamento PIX' : 'Novo Lançamento PIX'}</h2><span>Lotérica: <strong>{company}</strong> · {monthLabels[month - 1]}/{year}</span></div><button type="button" className="rp-icon-button" onClick={() => setDraft(null)} aria-label="Fechar"><X size={16} /></button></header>
         <div className="rp-entry-type"><span>Tipo de Lançamento</span><div role="group" aria-label="Tipo de lançamento"><button type="button" className={draft.tipo === 'falta' ? 'missing selected' : ''} aria-pressed={draft.tipo === 'falta'} onClick={() => setDraft({ ...draft, tipo: 'falta' })}>PIX FALTANDO</button><button type="button" className={draft.tipo === 'sobra' ? 'surplus selected' : ''} aria-pressed={draft.tipo === 'sobra'} onClick={() => setDraft({ ...draft, tipo: 'sobra' })}>PIX SOBRANDO</button></div></div>
-        <div className="rp-entry-form rp-quick-entry-form"><label>Dia (1 a {daysInMonth(year, month)})<span className="rp-day-input"><input type="number" min="1" max={daysInMonth(year, month)} value={draft.dia} onChange={(event) => setDraft({ ...draft, dia: event.target.value })} required /><button type="button" onClick={() => setDraft({ ...draft, dia: String(Math.min(new Date().getDate(), daysInMonth(year, month))) })}>Hoje</button></span></label><label>Valor (R$)<input autoFocus inputMode="decimal" placeholder="R$ 10 ou 10,50" value={draft.valor} onChange={(event) => setDraft({ ...draft, valor: event.target.value })} required /></label><label>Funcionário<input list={`employees-${workspaceId}`} value={draft.funcionario} onChange={(event) => setDraft({ ...draft, funcionario: event.target.value })} /><datalist id={`employees-${workspaceId}`}>{employees.map((name) => <option value={name} key={name} />)}</datalist></label><label>Cliente / Descrição (Opcional)<input value={draft.cliente} onChange={(event) => setDraft({ ...draft, cliente: event.target.value })} /></label></div>
+        <div className="rp-entry-form rp-quick-entry-form"><label>Mês<select value={draft.mes} onChange={(event) => setDraft({ ...draft, mes: event.target.value, dia: String(Math.min(Number(draft.dia), daysInMonth(year, Number(event.target.value)))) })}>{monthLabels.map((name, index) => <option key={name} value={index + 1}>{name}</option>)}</select></label><label>Dia (1 a {daysInMonth(year, Number(draft.mes))})<span className="rp-day-input"><input type="number" min="1" max={daysInMonth(year, Number(draft.mes))} value={draft.dia} onChange={(event) => setDraft({ ...draft, dia: event.target.value })} required /><button type="button" onClick={() => setDraft({ ...draft, dia: String(Math.min(new Date().getDate(), daysInMonth(year, Number(draft.mes))) ) })}>Hoje</button></span></label><label>Valor (R$)<input autoFocus inputMode="decimal" placeholder="R$ 10 ou 10,50" value={draft.valor} onChange={(event) => setDraft({ ...draft, valor: event.target.value })} required /></label><label>Funcionário<input list={`employees-${workspaceId}`} value={draft.funcionario} onChange={(event) => setDraft({ ...draft, funcionario: event.target.value })} /><datalist id={`employees-${workspaceId}`}>{employees.map((name) => <option value={name} key={name} />)}</datalist></label><label>Cliente / Descrição (Opcional)<input value={draft.cliente} onChange={(event) => setDraft({ ...draft, cliente: event.target.value })} /></label></div>
         <footer className="rp-quick-entry-footer"><button type="button" className="rp-button rp-button-outline" onClick={() => setDraft(null)}>Cancelar</button><button type="submit" className="rp-button rp-button-primary lc-shared-action lc-shared-action-primary" disabled={busy}>{busy ? 'Salvando…' : 'Lançar Registro'}</button></footer>
       </form></div>}
+
+      {moveRows && <div className="rp-overlay" onMouseDown={(event) => event.target === event.currentTarget && setMoveRows(null)}><section className="rp-entry-modal rp-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="rp-move-title"><header><div><p className="rp-eyebrow">MOVIMENTAÇÃO DE REGISTROS</p><h2 id="rp-move-title">Mover lançamentos</h2><span>{moveRows.length} registro(s) selecionado(s)</span></div><button type="button" className="rp-icon-button" onClick={() => setMoveRows(null)} aria-label="Fechar"><X size={16} /></button></header><div className="rp-entry-form rp-move-form"><label>Lotérica de destino<select value={moveCompany} onChange={(event) => setMoveCompany(event.target.value)}>{companies.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><label>Mês de destino<select value={moveMonth} onChange={(event) => setMoveMonth(Number(event.target.value))}>{monthLabels.map((name, index) => <option key={name} value={index + 1}>{name} ({index + 1})</option>)}</select></label><label>Ano de destino<input type="number" min={1900} max={2100} value={moveYear} onChange={(event) => setMoveYear(Number(event.target.value))} /></label></div><footer className="rp-move-footer"><button type="button" className="rp-button rp-button-outline" onClick={() => setMoveRows(null)}>Cancelar</button><button type="button" className="rp-button rp-button-primary" disabled={busy || moveYear < 1900 || moveYear > 2100} onClick={() => void executeMoveRows()}>Mover lançamentos</button></footer></section></div>}
 
       {renameForm && <div className="rp-overlay" onMouseDown={(event) => event.target === event.currentTarget && setRenameForm(null)}><form className="rp-entry-modal rp-confirm-modal" role="dialog" aria-modal="true" onSubmit={(event) => void saveEmployeeRename(event)}>
         <header><div><p className="rp-eyebrow">CADASTRO DE EQUIPE</p><h2>Renomear funcionário</h2></div><button type="button" className="rp-icon-button" onClick={() => setRenameForm(null)} aria-label="Fechar"><X size={16} /></button></header>
@@ -1314,18 +1412,47 @@ export function RelatorioModule({ workspaceId, isActive }: { workspaceId: string
       </form></div>}
 
       {bulk && <div className="rp-overlay rp-bulk-delete-overlay" onMouseDown={(event) => event.target === event.currentTarget && setBulk(null)}><section className="rp-entry-modal rp-bulk-delete-modal" role="dialog" aria-modal="true" aria-labelledby="rp-bulk-title">
-        <header><div><p className="rp-eyebrow">EXCLUSÃO SEGURA</p><h2 id="rp-bulk-title">Exclusão em Massa de Lançamentos</h2><span>Lotérica selecionada: <strong>{company}</strong></span></div><button type="button" className="rp-icon-button" onClick={() => setBulk(null)} aria-label="Fechar"><X size={16} /></button></header>
+        <header><div><p className="rp-eyebrow">EXCLUSÃO SEGURA</p><h2 id="rp-bulk-title">Exclusão em Massa de Lançamentos</h2><span>Lotérica afetada: <strong>{company}</strong></span></div><button type="button" className="rp-icon-button" onClick={() => setBulk(null)} aria-label="Fechar"><X size={16} /></button></header>
         <div className="rp-bulk-config">
-          <strong>1. Escolha o escopo da exclusão:</strong>
-          <div className="rp-bulk-scopes" role="radiogroup" aria-label="Escopo da exclusão">
-            {([['day', 'Dia específico'], ['month', 'Mês inteiro'], ['filter', 'Filtro ativo']] as const).map(([scope, label]) => <label key={scope} className={bulk.scope === scope ? 'selected' : ''}><input type="radio" name="bulk-scope" value={scope} checked={bulk.scope === scope} onChange={() => setBulk({ ...bulk, scope })} />{label}</label>)}
+          <strong>Selecione anos, meses ou dias:</strong>
+          <div className="rp-bulk-period-tree">
+            {bulk.tree.map((yearEntry: any) => {
+              const yearValue = Number(yearEntry.year);
+              const yearKey = bulkYearKey(yearValue);
+              const yearSelected = bulk.selectedKeys.includes(yearKey) || yearEntry.months.length > 0 && yearEntry.months.every((monthEntry: any) => {
+                const monthKey = bulkMonthKey(yearValue, Number(monthEntry.month));
+                const dayKeys = (monthEntry.days || []).map((day: any) => bulkDayKey(yearValue, Number(monthEntry.month), Number(day.day)));
+                return bulk.selectedKeys.includes(monthKey) || dayKeys.length > 0 && dayKeys.every((key: string) => bulk.selectedKeys.includes(key));
+              });
+              const yearPartial = !yearSelected && yearEntry.months.some((monthEntry: any) => bulk.selectedKeys.includes(bulkMonthKey(yearValue, Number(monthEntry.month))) || (monthEntry.days || []).some((day: any) => bulk.selectedKeys.includes(bulkDayKey(yearValue, Number(monthEntry.month), Number(day.day)))));
+              const expanded = bulk.expandedYears.includes(yearValue);
+              return <div className="rp-bulk-year" key={yearValue}>
+                <div className="rp-bulk-year-row"><button type="button" aria-label={`${expanded ? 'Recolher' : 'Expandir'} ${yearValue}`} onClick={() => setBulk((value: any) => ({ ...value, expandedYears: expanded ? value.expandedYears.filter((item: number) => item !== yearValue) : [...value.expandedYears, yearValue] }))}>{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button><label><input type="checkbox" checked={yearSelected} ref={(element) => { if (element) element.indeterminate = yearPartial; }} onChange={() => toggleBulkYear(yearValue)} /><strong>{yearValue}</strong><span>{yearEntry.months.reduce((sum: number, item: any) => sum + item.count, 0)} lançamento(s)</span></label></div>
+                {expanded && <div className="rp-bulk-months">{yearEntry.months.map((monthEntry: any) => {
+                  const monthValue = Number(monthEntry.month);
+                  const monthKey = bulkMonthKey(yearValue, monthValue);
+                  const dayKeys = (monthEntry.days || []).map((day: any) => bulkDayKey(yearValue, monthValue, Number(day.day)));
+                  const monthSelected = bulk.selectedKeys.includes(yearKey) || bulk.selectedKeys.includes(monthKey) || dayKeys.length > 0 && dayKeys.every((key: string) => bulk.selectedKeys.includes(key));
+                  const monthPartial = !monthSelected && dayKeys.some((key: string) => bulk.selectedKeys.includes(key));
+                  const monthExpanded = bulk.expandedMonths.includes(monthKey);
+                  return <div className="rp-bulk-month" key={monthKey}>
+                    <div className="rp-bulk-month-row"><button type="button" aria-label={`${monthExpanded ? 'Recolher' : 'Expandir'} ${monthLabels[monthValue - 1]} ${yearValue}`} onClick={() => setBulk((value: any) => ({ ...value, expandedMonths: monthExpanded ? value.expandedMonths.filter((item: string) => item !== monthKey) : [...value.expandedMonths, monthKey] }))}>{monthExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button><label><input type="checkbox" checked={monthSelected} ref={(element) => { if (element) element.indeterminate = monthPartial; }} onChange={() => toggleBulkMonth(yearValue, monthValue)} /><span>{monthLabels[monthValue - 1]} ({monthValue})</span><small>{monthEntry.count}</small></label></div>
+                    {monthExpanded && <div className="rp-bulk-days">{monthEntry.days.map((dayEntry: any) => {
+                      const dayValue = Number(dayEntry.day);
+                      return <label key={dayValue}><input type="checkbox" checked={bulk.selectedKeys.includes(yearKey) || bulk.selectedKeys.includes(monthKey) || bulk.selectedKeys.includes(bulkDayKey(yearValue, monthValue, dayValue))} onChange={() => toggleBulkDay(yearValue, monthValue, dayValue)} />Dia {String(dayValue).padStart(2, '0')} <small>{dayEntry.count}</small></label>;
+                    })}</div>}
+                  </div>;
+                })}</div>}
+              </div>;
+            })}
+            {!bulk.tree.length && <span className="rp-bulk-tree-empty">Não há lançamentos ativos para esta lotérica.</span>}
           </div>
-          {bulk.scope === 'day' && <label className="rp-bulk-day">Dia a excluir:<input type="number" min="1" max={daysInMonth(year, month)} value={bulk.day} onChange={(event) => setBulk({ ...bulk, day: event.target.value })} /><span>no mês de {monthLabels[month - 1]}/{year}</span></label>}
-          <label className="rp-bulk-category"><strong>2. Categorias afetadas:</strong><select value={bulk.category} onChange={(event) => setBulk({ ...bulk, category: event.target.value })}><option value="ambos">Ambas (PIX Faltando e PIX Sobrando)</option><option value="falta">Somente PIX Faltando</option><option value="sobra">Somente PIX Sobrando</option></select></label>
-          <div className="rp-bulk-preview"><div><strong>PRÉVIA DA OPERAÇÃO:</strong><b>{company} — {monthLabels[month - 1]}/{year}{bulk.scope === 'day' ? ` (Dia ${String(bulk.day).padStart(2, '0')})` : bulk.scope === 'filter' && dayFilter ? ` (Dia ${String(dayFilter).padStart(2, '0')})` : ''}</b></div>{bulk.loadingPreview ? <span>Calculando prévia…</span> : bulk.preview ? <><div><span>Lançamentos a remover:</span><strong>{bulk.preview.count} lançamento(s)</strong></div><div><span>Soma total dos valores:</span><strong className="total">{brl.format(bulk.preview.totalValor || 0)}</strong></div></> : <span>Não foi possível carregar a prévia.</span>}</div>
-          <div className="rp-bulk-safety"><strong>🛡 Blindagem de Dados e Sincronização:</strong><span>1. Um backup datado e verificado do banco de dados será criado automaticamente antes da exclusão.</span><span>2. A exclusão usa tombstones sincronizáveis para impedir que os registros apagados reapareçam no outro computador.</span><span>3. A Base Oficial Imutável permanece protegida.</span></div>
+          <label className="rp-bulk-category"><strong>Categoria:</strong><select value={bulk.category} onChange={(event) => setBulk({ ...bulk, category: event.target.value })}><option value="ambos">Ambas (PIX Faltando e PIX Sobrando)</option><option value="falta">Somente PIX Faltando</option><option value="sobra">Somente PIX Sobrando</option></select></label>
+          <div className="rp-bulk-preview"><div><strong>PRÉVIA DA OPERAÇÃO:</strong><b>{bulk.selectedKeys.map((key: string) => { const period: any = parseBulkPeriodKey(key); return period.month == null ? String(period.year) : period.days ? `${monthLabels[period.month - 1]} (${period.month})/${period.year}, dia(s) ${period.days.join(', ')}` : `${monthLabels[period.month - 1]} (${period.month})/${period.year}`; }).join(' · ') || 'Nenhum período selecionado'}</b></div>{bulk.loadingPreview ? <span>Calculando prévia…</span> : bulk.preview ? <><div><span>Lotérica afetada:</span><strong>{company}</strong></div><div><span>Lançamentos ativos:</span><strong>{bulk.preview.count} registro(s) · {brl.format(bulk.preview.totalValor || 0)}</strong></div><div><span>Conflitos não resolvidos (mantidos):</span><strong>{bulk.preview.related?.unresolvedConflicts || 0}</strong></div><div><span>Fila de sincronização:</span><strong>{bulk.preview.related?.tombstonesToQueue || 0} tombstone(s) serão enfileirados</strong></div></> : <span>Não foi possível calcular a prévia.</span>}</div>
+          <div className="rp-bulk-safety"><strong>O que será alterado:</strong><span>Os lançamentos ativos serão marcados como excluídos em transação; o backup SQLite será validado antes da operação.</span><span>O histórico de versões e snapshots antigos será preservado. Tombstones serão publicados para os períodos completos selecionados para impedir reaparecimento em outra conta.</span><span>Os registros de conflito relacionados serão mantidos para auditoria.</span></div>
+          {(bulk.preview?.count >= 100 || bulk.selectedKeys.length >= 4 || bulk.selectedKeys.some((key: string) => key.startsWith('y:'))) && <label className="rp-bulk-confirm-label"><span>Digite 'EXCLUIR' para confirmar.</span><input value={bulk.confirmationText} onChange={(event) => setBulk({ ...bulk, confirmationText: event.target.value })} autoComplete="off" /></label>}
         </div>
-        <footer><button type="button" className="rp-button rp-button-outline" onClick={() => setBulk(null)}>Cancelar</button><button type="button" className="rp-button rp-button-danger" disabled={busy || bulk.loadingPreview || !bulk.preview?.count} onClick={() => void runBulkDelete()}><Trash2 size={14} />{busy ? 'Excluindo…' : 'Confirmar Exclusão em Massa'}</button></footer>
+        <footer><button type="button" className="rp-button rp-button-outline" onClick={() => setBulk(null)}>Cancelar</button><button type="button" className="rp-button rp-button-danger" disabled={busy || bulk.loadingPreview || !bulk.preview?.count || ((bulk.preview?.count >= 100 || bulk.selectedKeys.length >= 4 || bulk.selectedKeys.some((key: string) => key.startsWith('y:'))) && bulk.confirmationText !== 'EXCLUIR')} onClick={() => void runBulkDelete()}><Trash2 size={14} />{busy ? 'Excluindo…' : 'Confirmar Exclusão em Massa'}</button></footer>
       </section></div>}
 
       <ConflictResolutionModal
@@ -1631,7 +1758,7 @@ export const LedgerRow = React.memo(function LedgerRow({
   );
 });
 
-export const Ledger = React.memo(function Ledger({ title, kind, entries, onEdit, onInlineSave, onToggleStatus, onMarkAsConferido, onDelete, isActive = true }: any) {
+export const Ledger = React.memo(function Ledger({ title, kind, entries, onEdit, onInlineSave, onToggleStatus, onMarkAsConferido, onDelete, onMoveRows, isActive = true }: any) {
   const [editingCell, setEditingCell] = useState<{ id: string; field: 'valor' | 'cliente' | 'funcionario' } | null>(null);
   const [cellDraft, setCellDraft] = useState('');
   const savingCell = useRef(false);
@@ -1957,6 +2084,16 @@ export const Ledger = React.memo(function Ledger({ title, kind, entries, onEdit,
               )}
               <button
                 type="button"
+                onClick={() => {
+                  const rows = targetRows;
+                  setContextMenu(null);
+                  onMoveRows?.(rows);
+                }}
+              >
+                Mover {targetRows.length} lançamentos selecionados
+              </button>
+              <button
+                type="button"
                 className="danger"
                 onClick={() => {
                   const rows = targetRows;
@@ -1985,6 +2122,16 @@ export const Ledger = React.memo(function Ledger({ title, kind, entries, onEdit,
                   Marcar como conferido
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => {
+                  const rows = targetRows;
+                  setContextMenu(null);
+                  onMoveRows?.(rows);
+                }}
+              >
+                Mover lançamento
+              </button>
               <button
                 type="button"
                 onClick={() => {

@@ -120,7 +120,10 @@ class PixDatabase {
         user_email TEXT,
         summary TEXT,
         changes_json TEXT,
-        snapshot_json TEXT NOT NULL
+        snapshot_json TEXT NOT NULL,
+        remote_available INTEGER DEFAULT NULL,
+        remote_status_checked_at TEXT,
+        remote_status_reason TEXT
       );
 
       -- Tabela para metadados da base oficial imutável
@@ -222,9 +225,24 @@ class PixDatabase {
           user_email TEXT,
           summary TEXT,
           changes_json TEXT,
-          snapshot_json TEXT NOT NULL
+          snapshot_json TEXT NOT NULL,
+          remote_available INTEGER DEFAULT NULL,
+          remote_status_checked_at TEXT,
+          remote_status_reason TEXT
         );
       `);
+
+      const historyColumns = this.db.exec('PRAGMA table_info(sync_versions_history)');
+      const historyColumnNames = historyColumns?.[0]?.values?.map((row) => row[1]) || [];
+      if (!historyColumnNames.includes('remote_available')) {
+        this.db.run('ALTER TABLE sync_versions_history ADD COLUMN remote_available INTEGER DEFAULT NULL');
+      }
+      if (!historyColumnNames.includes('remote_status_checked_at')) {
+        this.db.run('ALTER TABLE sync_versions_history ADD COLUMN remote_status_checked_at TEXT');
+      }
+      if (!historyColumnNames.includes('remote_status_reason')) {
+        this.db.run('ALTER TABLE sync_versions_history ADD COLUMN remote_status_reason TEXT');
+      }
     } catch (err) {
       console.error('[Database] Erro na execução de migrações:', err);
       throw err;
@@ -736,6 +754,59 @@ class PixDatabase {
     return result;
   }
 
+  moveLancamentos(ids, loterica, ano, mes) {
+    const uniqueIds = [...new Set((ids || []).map(String))];
+    if (!uniqueIds.length) return { success: true, count: 0 };
+    const targetCompany = String(loterica || '').toUpperCase().trim();
+    const targetYear = Number(ano), targetMonth = Number(mes);
+    if (!targetCompany || !Number.isInteger(targetYear) || targetYear < 1900 || targetYear > 2100 || !Number.isInteger(targetMonth) || targetMonth < 1 || targetMonth > 12) throw new Error('Destino inválido.');
+    const requestedEntries = uniqueIds.map((id) => this.getLancamentoById(id));
+    if (requestedEntries.some((entry) => !entry || entry.deleted || entry.is_demo)) throw new Error('Um ou mais lançamentos não estão disponíveis para movimentação.');
+    const entries = requestedEntries.filter((entry) => String(entry.loterica).toUpperCase().trim() !== targetCompany
+      || Number(entry.ano) !== targetYear || Number(entry.mes) !== targetMonth);
+    if (!entries.length) return { success: true, count: 0, message: 'Os lançamentos já pertencem ao período de destino.' };
+    const lastDay = new Date(targetYear, targetMonth, 0).getDate();
+    if (entries.some((entry) => Number(entry.dia) > lastDay)) throw new Error(`O mês de destino possui somente ${lastDay} dias.`);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = path.join(path.dirname(this.dbFilePath), `pix_lotericas.db.bak_move_${timestamp}`);
+    fs.writeFileSync(backupPath, Buffer.from(this.db.export()));
+    const backupDb = new this.SQL.Database(fs.readFileSync(backupPath));
+    const check = backupDb.exec('PRAGMA integrity_check;');
+    backupDb.close();
+    if (check?.[0]?.values?.[0]?.[0] !== 'ok') throw new Error('Backup inválido. Movimentação cancelada.');
+    const now = new Date().toISOString();
+    let committed = false;
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      const update = this.db.prepare(`UPDATE pix_lancamentos SET loterica=:company, ano=:year, mes=:month, data_formatada=:date, version=:version, atualizado_em=:now WHERE id=:id AND (deleted=0 OR deleted IS NULL)`);
+      const queue = this.db.prepare(`INSERT INTO sync_queue (operation, entity_id, payload, created_at, attempts, status) VALUES ('UPDATE', :entity_id, :payload, :created_at, 0, 'pending')`);
+      for (const entry of entries) {
+        const moved = { ...entry, loterica: targetCompany, ano: targetYear, mes: targetMonth, data_formatada: `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(entry.dia).padStart(2, '0')}`, version: (Number(entry.version) || 1) + 1, atualizado_em: now };
+        update.run({ ':company': targetCompany, ':year': targetYear, ':month': targetMonth, ':date': moved.data_formatada, ':version': moved.version, ':now': now, ':id': entry.id });
+        if (!entry.is_demo) {
+          // Queue both period keys so Drive publishes a new snapshot for the source
+          // period (without this row) and the destination period (with the row).
+          queue.run({ ':entity_id': entry.id, ':payload': JSON.stringify({ ...entry, deleted: 1, version: moved.version, atualizado_em: now }), ':created_at': now });
+          queue.run({ ':entity_id': entry.id, ':payload': JSON.stringify(moved), ':created_at': now });
+        }
+      }
+      update.free();
+      queue.free();
+      this.db.run('COMMIT');
+      committed = true;
+      this.saveToDisk();
+      return { success: true, count: entries.length, backupPath };
+    } catch (error) {
+      if (committed) {
+        this.db.close();
+        this.db = new this.SQL.Database(fs.readFileSync(backupPath));
+      } else {
+        try { this.db.run('ROLLBACK'); } catch {}
+      }
+      throw error;
+    }
+  }
+
   // MÉTODO CRÍTICO: Corrige o erro "db.updateObservacoes is not a function" (PARTE 1)
   updateObservacoes(id, observacoes, status, options = {}) {
     const existing = this.getLancamentoById(id);
@@ -973,7 +1044,8 @@ class PixDatabase {
     const stmt = this.db.prepare(`
       SELECT id, file_key, loterica, ano, mes, version_num, version_id,
              base_version_id, created_at, device_id, device_name, user_email,
-             summary, changes_json
+             summary, changes_json, remote_available, remote_status_checked_at,
+             remote_status_reason
       FROM sync_versions_history
       WHERE loterica = :loterica AND ano = :ano AND mes = :mes
       ORDER BY version_num DESC
@@ -991,11 +1063,35 @@ class PixDatabase {
       } catch {
         row.changes = [];
       }
+      row.local_available = true;
       delete row.changes_json;
       list.push(row);
     }
     stmt.free();
     return list;
+  }
+
+  markVersionRemoteAvailability(versionId, available, reason = '', options = {}) {
+    if (!versionId) return false;
+    const checkedAt = new Date().toISOString();
+    const stmt = this.db.prepare(`
+      UPDATE sync_versions_history
+      SET remote_available = :available,
+          remote_status_checked_at = :checked_at,
+          remote_status_reason = :reason
+      WHERE version_id = :version_id
+        AND (remote_available IS NOT :available OR COALESCE(remote_status_reason, '') <> :reason)
+    `);
+    stmt.run({
+      ':available': available === null ? null : (available ? 1 : 0),
+      ':checked_at': checkedAt,
+      ':reason': reason || '',
+      ':version_id': String(versionId)
+    });
+    const changed = Number(this.db.getRowsModified?.() || 0) > 0;
+    stmt.free();
+    if (changed && !options.deferPersist) this.saveToDisk();
+    return changed;
   }
 
   getVersionById(versionId) {
@@ -1036,8 +1132,36 @@ class PixDatabase {
       this.db.run('BEGIN TRANSACTION;');
       transactionOpen = true;
 
+      const incomingById = new Map();
       for (const entry of entries) {
+        if (!entry || !entry.id) throw new Error('Snapshot contém lançamento sem ID.');
+        if (incomingById.has(String(entry.id))) throw new Error(`Snapshot contém ID duplicado: ${entry.id}`);
+        incomingById.set(String(entry.id), entry);
+      }
+
+      const existingRows = this.getAllLancamentosForFile(normLoterica, nAno, nMes, true);
+      const changedEntry = (left, right) => {
+        if (!left || !right) return left !== right;
+        const fields = ['loterica', 'ano', 'mes', 'dia', 'data_formatada', 'valor', 'tipo', 'funcionario', 'cliente', 'status', 'observacoes', 'is_demo', 'deleted'];
+        return fields.some((field) => {
+          const a = left[field];
+          const b = right[field];
+          if (field === 'valor') return Math.round(Number(a || 0) * 100) !== Math.round(Number(b || 0) * 100);
+          if (['ano', 'mes', 'dia', 'is_demo', 'deleted'].includes(field)) return Number(a || 0) !== Number(b || 0);
+          return String(a ?? '') !== String(b ?? '');
+        });
+      };
+
+      const fromSync = options.fromSync !== false;
+      for (const entry of incomingById.values()) {
         const existing = this.getLancamentoById(entry.id);
+        if (existing && (
+          String(existing.loterica || '').toUpperCase().trim() !== normLoterica ||
+          Number(existing.ano) !== nAno ||
+          Number(existing.mes) !== nMes
+        )) {
+          throw new Error(`O ID ${entry.id} pertence a outro período; snapshot rejeitado para proteger dados externos.`);
+        }
         const entryData = {
           ...entry,
           loterica: normLoterica,
@@ -1045,11 +1169,33 @@ class PixDatabase {
           mes: nMes
         };
         if (!existing) {
-          this.addLancamento(entryData, { fromSync: options.fromSync !== false, deferPersist: true });
-        } else {
-          this.updateLancamento(entry.id, entryData, { fromSync: options.fromSync !== false, deferPersist: true });
+          this.addLancamento(entryData, { fromSync, deferPersist: true });
+        } else if (changedEntry(existing, entryData)) {
+          this.updateLancamento(entry.id, entryData, { fromSync, deferPersist: true });
         }
       }
+
+      // Snapshots são estados completos: linhas locais omitidas tornam-se tombstones.
+      // Mantemos as linhas fisicamente para que históricos e referências continuem válidos.
+      for (const existing of existingRows) {
+        if (incomingById.has(String(existing.id)) || existing.deleted) continue;
+        this.deleteLancamento(existing.id, { fromSync, deferPersist: true });
+      }
+
+      if (options.restoreOperation) {
+        const restore = options.restoreOperation;
+        const fileKey = restore.file_key;
+        if (!fileKey) throw new Error('A restauração local exige a chave completa do período.');
+        this.enqueueSync('RESTORE_PERIOD', `restore_${fileKey}_${restore.version_id || Date.now()}`, {
+          loterica: normLoterica,
+          ano: nAno,
+          mes: nMes,
+          restore_from_version_id: String(restore.version_id || ''),
+          restore_created_at: restore.created_at || new Date().toISOString()
+        });
+      }
+
+      if (options.historyRecord) this.saveVersionHistory(options.historyRecord, { deferPersist: true });
 
       this.db.run('COMMIT;');
       transactionOpen = false;
@@ -1193,17 +1339,31 @@ class PixDatabase {
 
   // Limpeza explícita e segura de dados de demonstração (PARTE 8)
   clearDemoData(loterica = null) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = path.join(path.dirname(this.dbFilePath), `pix_lotericas.db.bak_seed_${timestamp}`);
+    fs.writeFileSync(backupPath, Buffer.from(this.db.export()));
+    const backupDb = new this.SQL.Database(fs.readFileSync(backupPath));
+    const integrity = backupDb.exec('PRAGMA integrity_check;');
+    backupDb.close();
+    if (integrity?.[0]?.values?.[0]?.[0] !== 'ok') throw new Error('Falha na validação do backup prévio. Limpeza Seed cancelada por segurança.');
     let sql = "DELETE FROM pix_lancamentos WHERE is_demo = 1";
     const params = {};
     if (loterica) {
       sql += " AND loterica = :loterica";
       params[':loterica'] = loterica;
     }
-    const stmt = this.db.prepare(sql);
-    stmt.run(params);
-    stmt.free();
-    this.saveToDisk();
-    return true;
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      const stmt = this.db.prepare(sql);
+      stmt.run(params);
+      stmt.free();
+      this.db.run('COMMIT');
+      this.saveToDisk();
+      return { success: true, backupPath };
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      throw error;
+    }
   }
 
   // --- BASE OFICIAL IMUTÁVEL E RESTAURAÇÃO (OBJETIVO 3 & 4) ---
@@ -1263,40 +1423,99 @@ class PixDatabase {
     return { total, byLoterica, byStatus };
   }
 
-  // --- EXCLUSÃO EM MASSA SEGURA COM AUDITORIA E BACKUP (OBJETIVO 5) ---
-  previewBulkDelete({ loterica, ano, mes, dia, tipo }) {
-    if (!loterica) throw new Error('A lotérica deve ser informada explicitamente para exclusão em massa.');
-    if (!ano || !mes) throw new Error('O ano e mês devem ser informados explicitamente.');
-
-    let query = `
-      SELECT id, dia, valor, tipo, funcionario, cliente, status
+  // --- EXCLUSÃO EM MASSA SEGURA COM AUDITORIA, TOMBSTONES E BACKUP ---
+  getBulkDeletePeriods(loterica) {
+    if (!loterica) throw new Error('A lotérica deve ser informada explicitamente.');
+    const stmt = this.db.prepare(`
+      SELECT ano, mes, dia, COUNT(*) AS count
       FROM pix_lancamentos
-      WHERE loterica = :loterica
-        AND ano = :ano
-        AND mes = :mes
-        AND (deleted = 0 OR deleted IS NULL)
-    `;
-    const params = {
-      ':loterica': loterica,
-      ':ano': Number(ano),
-      ':mes': Number(mes)
-    };
-
-    if (dia !== undefined && dia !== null && dia !== 'all' && dia !== '') {
-      query += " AND dia = :dia";
-      params[':dia'] = Number(dia);
+      WHERE loterica = :loterica AND (deleted = 0 OR deleted IS NULL)
+      GROUP BY ano, mes, dia ORDER BY ano DESC, mes DESC, dia ASC
+    `);
+    stmt.bind({ ':loterica': loterica });
+    const years = new Map();
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      const year = Number(row.ano), month = Number(row.mes), day = Number(row.dia);
+      if (!years.has(year)) years.set(year, new Map());
+      const months = years.get(year);
+      if (!months.has(month)) months.set(month, []);
+      months.get(month).push({ day, count: Number(row.count) });
     }
+    stmt.free();
+    return Array.from(years, ([year, months]) => ({
+      year,
+      months: Array.from(months, ([month, days]) => ({
+        month,
+        count: days.reduce((sum, item) => sum + item.count, 0),
+        days,
+      })),
+    }));
+  }
 
-    if (tipo && tipo !== 'ambos' && tipo !== 'all') {
-      query += " AND tipo = :tipo";
-      params[':tipo'] = tipo;
+  normalizeBulkDeletePeriods(input = {}) {
+    const source = Array.isArray(input.periods) ? input.periods : (input.ano && input.mes
+      ? [{ year: input.ano, month: input.mes, days: input.dia && input.dia !== 'all' ? [input.dia] : null }]
+      : []);
+    if (!source.length) throw new Error('Selecione pelo menos um ano, mês ou dia para excluir.');
+    const unique = new Map();
+    for (const period of source) {
+      const year = Number(period.year ?? period.ano);
+      const month = period.month == null && period.mes == null ? null : Number(period.month ?? period.mes);
+      const days = Array.isArray(period.days ?? period.dias) ? [...new Set((period.days ?? period.dias).map(Number))].sort((a, b) => a - b) : null;
+      if (!Number.isInteger(year) || year < 1900 || year > 2100) throw new Error('Ano inválido no escopo da exclusão.');
+      if (month !== null && (!Number.isInteger(month) || month < 1 || month > 12)) throw new Error('Mês inválido no escopo da exclusão.');
+      if (days && (month === null || days.length === 0 || days.some((day) => !Number.isInteger(day) || day < 1 || day > new Date(year, month, 0).getDate()))) throw new Error('Dia inválido no escopo da exclusão.');
+      const key = month === null ? `y:${year}` : days ? `d:${year}:${month}:${days.join(',')}` : `m:${year}:${month}`;
+      unique.set(key, { year, month, days });
     }
+    const periods = [...unique.values()];
+    return periods.filter((period, index) => !periods.some((parent, parentIndex) => parentIndex !== index
+      && parent.year === period.year
+      && (parent.month === null || parent.month === period.month)
+      && (!parent.days || (period.days && period.days.every((day) => parent.days.includes(day))))));
+  }
 
+  bulkDeletePredicate(periods) {
+    const clauses = [];
+    const params = {};
+    let index = 0;
+    for (const period of periods) {
+      const y = `:periodYear${index}`;
+      params[y] = period.year;
+      if (period.month === null) clauses.push(`(ano = ${y})`);
+      else {
+        const m = `:periodMonth${index}`;
+        params[m] = period.month;
+        if (period.days?.length) {
+          const dayParams = period.days.map((day, dayIndex) => {
+            const key = `:periodDay${index}_${dayIndex}`;
+            params[key] = day;
+            return key;
+          });
+          clauses.push(`(ano = ${y} AND mes = ${m} AND dia IN (${dayParams.join(',')}))`);
+        } else clauses.push(`(ano = ${y} AND mes = ${m})`);
+      }
+      index += 1;
+    }
+    return { sql: clauses.length ? `(${clauses.join(' OR ')})` : '0', params };
+  }
+
+  previewBulkDelete(input = {}) {
+    const loterica = String(input.loterica || '').trim();
+    if (!loterica) throw new Error('A lotérica deve ser informada explicitamente para exclusão em massa.');
+    const periods = this.normalizeBulkDeletePeriods(input);
+    const filter = this.bulkDeletePredicate(periods);
+    let query = `SELECT id, loterica, ano, mes, dia, valor, tipo, funcionario, cliente, status FROM pix_lancamentos WHERE loterica = :loterica AND ${filter.sql} AND (deleted = 0 OR deleted IS NULL)`;
+    const params = { ':loterica': loterica, ...filter.params };
+    if (input.tipo && input.tipo !== 'ambos' && input.tipo !== 'all') {
+      query += ' AND tipo = :tipo';
+      params[':tipo'] = input.tipo;
+    }
     const stmt = this.db.prepare(query);
     stmt.bind(params);
     const matched = [];
     let sumCents = 0;
-
     while (stmt.step()) {
       const row = stmt.getAsObject();
       matched.push(row);
@@ -1304,22 +1523,32 @@ class PixDatabase {
     }
     stmt.free();
 
+    let unresolvedConflicts = 0;
+    for (let offset = 0; offset < matched.length; offset += 400) {
+      const batch = matched.slice(offset, offset + 400);
+      if (!batch.length) continue;
+      const idParams = {};
+      const markers = batch.map((row, i) => {
+        const key = `:conflictId${i}`;
+        idParams[key] = row.id;
+        return key;
+      });
+      const conflicts = this.db.prepare(`SELECT COUNT(*) AS count FROM sync_conflicts WHERE resolved = 0 AND entry_id IN (${markers.join(',')})`);
+      conflicts.bind(idParams);
+      if (conflicts.step()) unresolvedConflicts += Number(conflicts.getAsObject().count || 0);
+      conflicts.free();
+    }
     return {
       count: matched.length,
       totalValor: sumCents / 100,
-      scope: {
-        loterica,
-        ano: Number(ano),
-        mes: Number(mes),
-        dia: (dia && dia !== 'all') ? Number(dia) : 'todos',
-        tipo: (tipo && tipo !== 'all') ? tipo : 'ambos'
-      },
-      sampleEntries: matched.slice(0, 5)
+      scope: { loterica, periods, tipo: input.tipo && input.tipo !== 'all' ? input.tipo : 'ambos' },
+      related: { tombstonesToQueue: matched.length, unresolvedConflicts, snapshotsPreserved: true },
+      sampleEntries: matched.slice(0, 5),
     };
   }
 
-  executeBulkDelete({ loterica, ano, mes, dia, tipo }, options = {}) {
-    const preview = this.previewBulkDelete({ loterica, ano, mes, dia, tipo });
+  executeBulkDelete(input = {}, options = {}) {
+    const preview = this.previewBulkDelete(input);
     if (preview.count === 0) {
       return { success: true, count: 0, totalValor: 0, message: 'Nenhum lançamento encontrado no escopo informado.' };
     }
@@ -1341,33 +1570,16 @@ class PixDatabase {
     }
 
     // 2. Execução transacional
+    let committed = false;
     try {
       this.db.run("BEGIN TRANSACTION;");
-
-      let fetchQuery = `
-        SELECT id, valor, tipo, dia, funcionario, cliente, version
-        FROM pix_lancamentos
-        WHERE loterica = :loterica
-          AND ano = :ano
-          AND mes = :mes
-          AND (deleted = 0 OR deleted IS NULL)
-      `;
-      const params = {
-        ':loterica': loterica,
-        ':ano': Number(ano),
-        ':mes': Number(mes)
-      };
-
-      if (dia !== undefined && dia !== null && dia !== 'all' && dia !== '') {
-        fetchQuery += " AND dia = :dia";
-        params[':dia'] = Number(dia);
+      const filter = this.bulkDeletePredicate(preview.scope.periods);
+      let fetchQuery = `SELECT id, loterica, ano, mes, dia, valor, tipo, funcionario, cliente, status, version FROM pix_lancamentos WHERE loterica = :loterica AND ${filter.sql} AND (deleted = 0 OR deleted IS NULL)`;
+      const params = { ':loterica': preview.scope.loterica, ...filter.params };
+      if (preview.scope.tipo !== 'ambos' && preview.scope.tipo !== 'all') {
+        fetchQuery += ' AND tipo = :tipo';
+        params[':tipo'] = preview.scope.tipo;
       }
-
-      if (tipo && tipo !== 'ambos' && tipo !== 'all') {
-        fetchQuery += " AND tipo = :tipo";
-        params[':tipo'] = tipo;
-      }
-
       const fetchStmt = this.db.prepare(fetchQuery);
       fetchStmt.bind(params);
       const toDelete = [];
@@ -1384,6 +1596,10 @@ class PixDatabase {
           atualizado_em = :atualizado_em
         WHERE id = :id;
       `);
+      const queueStmt = options.fromSync ? null : this.db.prepare(`
+        INSERT INTO sync_queue (operation, entity_id, payload, created_at, attempts, status)
+        VALUES ('DELETE', :entity_id, :payload, :created_at, 0, 'pending')
+      `);
 
       for (const item of toDelete) {
         const newVersion = (Number(item.version) || 1) + 1;
@@ -1393,23 +1609,23 @@ class PixDatabase {
           ':atualizado_em': nowIso
         });
 
-        // Enfileira exclusão para sincronização via tombstone
-        if (!options.fromSync) {
-          this.enqueueSync('DELETE', item.id, {
-            ...item,
-            loterica,
-            ano: Number(ano),
-            mes: Number(mes),
-            deleted: 1,
-            version: newVersion,
-            atualizado_em: nowIso
+        // Enfileira tombstones dentro da mesma transação: falha ao enfileirar reverte a exclusão.
+        if (queueStmt) {
+          queueStmt.run({
+            ':entity_id': item.id,
+            ':payload': JSON.stringify({ ...item, deleted: 1, version: newVersion, atualizado_em: nowIso }),
+            ':created_at': nowIso,
           });
         }
       }
       updateStmt.free();
+      queueStmt?.free();
 
       // Registra no audit_log
-      const scopeDesc = `Exclusão em massa: ${loterica} - ${mes}/${ano} (Dia: ${preview.scope.dia}, Tipo: ${preview.scope.tipo})`;
+      const periodLabels = preview.scope.periods.map((period) => period.month == null
+        ? String(period.year)
+        : `${String(period.month).padStart(2, '0')}/${period.year}${period.days?.length ? ` dias ${period.days.join(', ')}` : ''}`).join('; ');
+      const scopeDesc = `Exclusão em massa: ${preview.scope.loterica} - ${periodLabels} (Tipo: ${preview.scope.tipo})`;
       const auditStmt = this.db.prepare(`
         INSERT INTO audit_log (
           timestamp, action, scope_description, records_affected, backup_path, details_json
@@ -1423,11 +1639,12 @@ class PixDatabase {
         ':scope_description': scopeDesc,
         ':records_affected': toDelete.length,
         ':backup_path': backupPath,
-        ':details_json': JSON.stringify(preview.scope)
+        ':details_json': JSON.stringify({ ...preview.scope, related: preview.related, snapshotsPreserved: true })
       });
       auditStmt.free();
 
       this.db.run("COMMIT;");
+      committed = true;
       this.saveToDisk();
 
       return {
@@ -1435,11 +1652,22 @@ class PixDatabase {
         count: toDelete.length,
         totalValor: preview.totalValor,
         backupPath,
-        scope: preview.scope
+        scope: preview.scope,
+        related: preview.related,
+        message: `${toDelete.length} lançamento(s) marcado(s) para exclusão e sincronização.`
       };
 
     } catch (err) {
-      try { this.db.run("ROLLBACK;"); } catch {}
+      if (committed) {
+        try {
+          this.db.close();
+          this.db = new this.SQL.Database(fs.readFileSync(backupPath));
+        } catch (restoreError) {
+          throw new Error(`Falha ao persistir a exclusão e restaurar o banco prévio: ${restoreError.message}`);
+        }
+      } else {
+        try { this.db.run("ROLLBACK;"); } catch {}
+      }
       throw err;
     }
   }

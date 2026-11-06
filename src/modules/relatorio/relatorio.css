@@ -1142,6 +1142,16 @@
   padding-top: 12px;
   border-top: 1px solid #e2e8f0;
 }
+.rp-move-form {
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(110px, 0.8fr);
+  align-items: end;
+}
+.rp-move-footer {
+  flex-wrap: nowrap !important;
+}
+.rp-move-footer .rp-button {
+  flex: 0 0 auto;
+}
 
 .rp-entry-type {
   display: flex;
@@ -1274,6 +1284,9 @@
   color: #0f172a;
   font-size: 13px;
 }
+.rp-credentials-form-heading { flex-direction: column; text-align: center; }
+.rp-credentials-form-heading > div { display: flex; flex-wrap: nowrap; justify-content: center; gap: 8px; }
+.rp-credentials-local-note { grid-column: 1 / -1; margin: 0; color: #64748b; font-size: 11px; line-height: 1.45; }
 .rp-credentials-form > label {
   display: flex;
   min-width: 0;
@@ -1311,11 +1324,12 @@
 .rp-credentials-actions {
   grid-column: 1 / -1;
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-wrap: nowrap;
+  gap: 6px;
   padding-top: 12px;
   border-top: 1px solid #e2e8f0;
 }
+.rp-credentials-actions .rp-button { min-width: 0; flex: 1 1 0; justify-content: center; white-space: nowrap; padding-inline: 8px; }
 
 .rp-bulk-config {
   display: flex;
@@ -1325,6 +1339,67 @@
   color: #334155;
   font-size: 12px;
 }
+.rp-bulk-period-tree {
+  display: flex;
+  max-height: min(42vh, 360px);
+  flex-direction: column;
+  gap: 4px;
+  overflow: auto;
+  padding: 7px;
+  border: 1px solid #dce4ec;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+.rp-bulk-year-row,
+.rp-bulk-month-row {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 5px;
+}
+.rp-bulk-year-row > button,
+.rp-bulk-month-row > button {
+  display: grid;
+  width: 24px;
+  height: 26px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+}
+.rp-bulk-year-row > button:hover,
+.rp-bulk-month-row > button:hover { background: #e2e8f0; }
+.rp-bulk-year-row label,
+.rp-bulk-month-row label,
+.rp-bulk-days label {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  color: #334155;
+  cursor: pointer;
+}
+.rp-bulk-year-row label { font-size: 13px; }
+.rp-bulk-year-row label span,
+.rp-bulk-month-row label small,
+.rp-bulk-days label small { margin-left: auto; color: #64748b; font-size: 11px; }
+.rp-bulk-period-tree input[type="checkbox"] { width: 15px; height: 15px; accent-color: #12385f; }
+.rp-bulk-months { padding-left: 22px; }
+.rp-bulk-month-row { min-height: 30px; }
+.rp-bulk-days {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(105px, 1fr));
+  gap: 3px 8px;
+  padding: 5px 8px 8px 36px;
+}
+.rp-bulk-days label { min-height: 26px; font-size: 11px; }
+.rp-bulk-tree-empty { padding: 12px; color: #64748b; }
+.rp-bulk-confirm-label { display: flex; flex-direction: column; gap: 5px; color: #9f1239; white-space: nowrap; }
+.rp-bulk-confirm-label input { height: 36px; padding: 6px 9px; border: 1px solid #fda4af; border-radius: 7px; background: white; }
 .rp-bulk-scopes {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { ArrowRight, Calendar, CheckCircle2, Clock, ExternalLink, FileClock, FileSpreadsheet, FileUp, FilterX, History, Layers, Trash2, User, X } from 'lucide-react';
+import { ArrowRight, Calendar, CheckCircle2, Clock, ExternalLink, FileClock, FileSpreadsheet, FileUp, FilterX, History, Layers, Trash2, User, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { LOTERICAS, formatarMoeda } from './logic/constants.js';
 import { parseExcelBuffer } from './logic/parser.js';
 import { ProtegeStore } from './logic/store.js';
@@ -94,6 +94,11 @@ export function ProtegeModule({ workspaceId }: { workspaceId: string; isActive: 
   const [dayMenuOpen, setDayMenuOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  if (!store.filtroMes) {
+    const persistedMonths = store.getAvailableMonths?.() || [];
+    if (persistedMonths.length) store.filtroMes = persistedMonths[persistedMonths.length - 1];
+  }
+
   useEffect(() => {
     let mounted = true;
     const syncFromElectron = async () => {
@@ -150,6 +155,8 @@ export function ProtegeModule({ workspaceId }: { workspaceId: string; isActive: 
   const rows = store.getFilteredRecords();
   const users = store.getAvailableUsers();
   const daysWithEntries: number[] = typeof store.getDaysWithEntries === 'function' ? store.getDaysWithEntries() : [];
+  const availableMonths: string[] = typeof store.getAvailableMonths === 'function' ? store.getAvailableMonths() : [];
+  const selectedMonth = store.filtroMes || availableMonths[availableMonths.length - 1] || null;
   const history = store.historicoImportacoes || [];
   const filterActive = Boolean(store.filtroUsuario || store.filtroData || store.filtroImportacaoId);
 
@@ -179,6 +186,10 @@ export function ProtegeModule({ workspaceId }: { workspaceId: string; isActive: 
         const parsed = parseExcelBuffer(getBytesBuffer(bytes), XLSX);
         if (!parsed.success) throw new Error(parsed.error || 'A planilha não contém registros válidos.');
         const result = store.importParsedResult(parsed, fileName);
+        if (typeof store.setFiltroMes === 'function') {
+          const importedMonths = parsed.records.map((record: any) => record.dataIso?.slice(0, 7)).filter(Boolean).sort();
+          if (importedMonths.length) store.setFiltroMes(importedMonths[importedMonths.length - 1]);
+        }
         setMessage(
           `Importação concluída: ${result.importadosCount} novos, ${result.duplicadosCount} duplicados e ${result.ignoradosCount} linhas ignoradas.${
             result.unknownCNPJs?.length ? ` CNPJs não reconhecidos: ${result.unknownCNPJs.join(', ')}.` : ''
@@ -187,7 +198,8 @@ export function ProtegeModule({ workspaceId }: { workspaceId: string; isActive: 
         setShowHistory(false);
       }
     } catch (error: any) {
-      setMessage(`Não foi possível importar: ${error?.message || error}`);
+      const reason = error?.message || String(error);
+      setMessage(reason.includes('módulo Pix') ? reason : `Não foi possível importar: ${reason}`);
     } finally {
       setBusy(false);
       if (fileRef.current) fileRef.current.value = '';
@@ -229,9 +241,10 @@ export function ProtegeModule({ workspaceId }: { workspaceId: string; isActive: 
 
   const activeToast: ToastItem | null = useMemo(() => {
     if (message) {
+      const isModuleWarning = message.includes('módulo Pix') || message.includes('Planilha inválida ou desconhecida');
       const isError = message.startsWith('Não foi') || message.startsWith('Erro');
       return {
-        tone: isError ? 'danger' : 'success',
+        tone: isModuleWarning ? 'warning' : isError ? 'danger' : 'success',
         text: message,
         onClose: () => setMessage(''),
       };
@@ -306,6 +319,11 @@ export function ProtegeModule({ workspaceId }: { workspaceId: string; isActive: 
         {!showHistory && (
           <div className="lc-menu-row pc-filters-row">
             <div className="lc-menu-group">
+              {selectedMonth && <div className="rp-months pc-calendar-month" role="group" aria-label="Mês do calendário Protege">
+                <button type="button" aria-label="Mês anterior" disabled={availableMonths.indexOf(selectedMonth) <= 0} onClick={() => set(() => store.setFiltroMes(availableMonths[availableMonths.indexOf(selectedMonth) - 1]))}><ChevronLeft size={15} /></button>
+                <strong>{new Date(`${selectedMonth}-01T12:00:00`).toLocaleDateString('pt-BR', { month: 'long' })} ({Number(selectedMonth.slice(5))})</strong>
+                <button type="button" aria-label="Próximo mês" disabled={availableMonths.indexOf(selectedMonth) >= availableMonths.length - 1} onClick={() => set(() => store.setFiltroMes(availableMonths[availableMonths.indexOf(selectedMonth) + 1]))}><ChevronRight size={15} /></button>
+              </div>}
               <div className="rp-months pc-user-strip" role="group" aria-label="Selecionar usuário">
                 <span className="pc-user-strip-label">
                   <User size={13} />

@@ -356,4 +356,20 @@ describe('3. Integração com RelatorioModule e Persistência em Lote', () => {
       expect(toggleStatusSpy).toHaveBeenCalledWith('rel-2', 'conferido', '');
     });
   });
+
+  it('navega por ano mantendo o mês selecionado e mostra os doze meses compactos', async () => {
+    const getLancamentos = (window as any).electronAPI.report.getLancamentos as ReturnType<typeof vi.fn>;
+    render(<RelatorioModule workspaceId="year-navigation" isActive={true} />);
+    const now = new Date();
+    const currentMonth = now.getMonth() + 1;
+    const currentYear = now.getFullYear();
+    await waitFor(() => expect(getLancamentos).toHaveBeenCalledWith('CAÇULA', currentYear, currentMonth, null));
+
+    for (const label of ['JAN (1)', 'FEV (2)', 'MAR (3)', 'ABR (4)', 'MAI (5)', 'JUN (6)', 'JUL (7)', 'AGO (8)', 'SET (9)', 'OUT (10)', 'NOV (11)', 'DEZ (12)']) {
+      expect(screen.getByRole('button', { name: label })).toBeInTheDocument();
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Ano anterior' }));
+    await waitFor(() => expect(getLancamentos).toHaveBeenLastCalledWith('CAÇULA', currentYear - 1, currentMonth, null));
+    expect(screen.getByRole('button', { name: 'Próximo ano' })).toBeInTheDocument();
+  });
 });

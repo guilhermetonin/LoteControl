@@ -25,6 +25,7 @@ describe('Statement Parser Service', () => {
 
     // Initial pre-selection: must include CRED PIX CHAVE and PIX RECEBIDO DADOS CONTA
     expect(result.initialSelectedHistoricos).toContain('CRED PIX CHAVE');
+    expect(result.initialSelectedHistoricos).toContain('PIX MANUAL DE DADOS');
     expect(result.initialSelectedHistoricos).toContain('PIX RECEBIDO DADOS CONTA');
 
     // Check available historicos contains other PIX types too
@@ -66,6 +67,15 @@ describe('Statement Parser Service', () => {
     expect(result.errors[0]).toContain('Histórico');
     expect(result.errors[0]).toContain('Documento');
     expect(result.errors[0]).toContain('Valor Lançamento');
+  });
+
+  it('rejects Protege headers with a module-specific instruction', () => {
+    const { indices, missingColumns } = locateColumns([
+      ['CNPJ', 'Data', 'Evento', 'Transação', 'Total'],
+      ['123', '01/10/2026', 'Depósito', 'TX-1', '10'],
+    ]);
+    expect(indices).toBeNull();
+    expect(missingColumns[0]).toContain('módulo Protege');
   });
 
   it('identifies columns regardless of order and normalized header names', () => {

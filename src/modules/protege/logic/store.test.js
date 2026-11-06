@@ -23,16 +23,18 @@ describe('histórico Protege', () => {
     expect(store.recordsMap.has('untracked')).toBe(true);
   });
 
-  it('limpa os registros rastreados pelo histórico e preserva registros sem vínculo', () => {
+  it('limpa registros rastreados, incluindo os vinculados ao histórico recuperado', () => {
     const store = new ProtegeStore({
       records: [{ id: 'tracked', lotericaKey: 'cacula' }, { id: 'untracked', lotericaKey: 'cacula' }],
       historicoImportacoes: [{ id: 'first', recordIds: ['tracked'] }],
       filtroImportacaoId: 'first',
     });
 
-    expect(store.clearImportHistory()).toEqual({ deletedRecords: 1 });
+    expect(store.historicoImportacoes.some((item) => item.id === 'import_recovered_cacula')).toBe(true);
+    expect(store.clearImportHistory()).toEqual({ deletedRecords: 2 });
     expect(store.historicoImportacoes).toEqual([]);
     expect(store.filtroImportacaoId).toBeNull();
-    expect(store.recordsMap.has('untracked')).toBe(true);
+    expect(store.recordsMap.has('tracked')).toBe(false);
+    expect(store.recordsMap.has('untracked')).toBe(false);
   });
 });

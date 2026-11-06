@@ -58,6 +58,8 @@ interface DayFilterPopoverProps {
   onToggleOpen: () => void;
   onClose: () => void;
   allDaysLabel?: string;
+  popoverPosition?: React.CSSProperties;
+  triggerRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
 export const DayFilterPopover: React.FC<DayFilterPopoverProps> = ({
@@ -68,6 +70,8 @@ export const DayFilterPopover: React.FC<DayFilterPopoverProps> = ({
   onToggleOpen,
   onClose,
   allDaysLabel = 'Todos os dias (Mês Completo)',
+  popoverPosition,
+  triggerRef,
 }) => {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const daysSet = daysWithEntries instanceof Set ? daysWithEntries : new Set(daysWithEntries);
@@ -86,6 +90,7 @@ export const DayFilterPopover: React.FC<DayFilterPopoverProps> = ({
   return (
     <div className="rp-day-filter-wrap" ref={wrapRef}>
       <button
+        ref={triggerRef}
         type="button"
         className={`rp-day-filter ${selectedDay !== null ? 'active' : ''}`}
         onClick={onToggleOpen}
@@ -97,7 +102,7 @@ export const DayFilterPopover: React.FC<DayFilterPopoverProps> = ({
         <span aria-hidden="true">▾</span>
       </button>
       {isOpen && (
-        <div className="rp-day-popover" role="dialog" aria-label="Selecionar dia">
+        <div className="rp-day-popover" style={popoverPosition} role="dialog" aria-label="Selecionar dia">
           <button
             type="button"
             className={selectedDay === null ? 'active' : ''}

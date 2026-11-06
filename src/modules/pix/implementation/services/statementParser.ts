@@ -121,6 +121,12 @@ export function locateColumns(rows: unknown[][]): {
       }
     }
 
+    const headerNames = row.map(normalizeHeader);
+    if (headerNames.includes('cnpj') && headerNames.includes('data') &&
+      headerNames.some((value) => value.includes('transacao')) && headerNames.includes('evento')) {
+      return { indices: null, missingColumns: ['Planilha Protege: importe no módulo Protege'] };
+    }
+
     if (historicoIndex !== -1 && documentoIndex !== -1 && valorIndex !== -1) {
       return {
         indices: {
@@ -170,8 +176,19 @@ export function locateColumns(rows: unknown[][]): {
 /**
  * Standard habituais descriptions that must be pre-selected when present
  */
+export const KNOWN_PIX_HISTORICOS = [
+  'CRED PIX CHAVE',
+  'CRED PIX QR COD DIN',
+  'CRED PIX SAQUE',
+  'CRED PIX TROCO',
+  'DEVOLUCAO PIX ENVIADO',
+  'PIX MANUAL DE DADOS',
+  'PIX RECEBIDO DADOS CONTA',
+];
+
 export const DEFAULT_PRESELECTED_HISTORICOS = [
   'CRED PIX CHAVE',
+  'PIX MANUAL DE DADOS',
   'PIX RECEBIDO DADOS CONTA',
 ];
 
@@ -384,7 +401,7 @@ export async function parseStatement(
     return a.rowNumber - b.rowNumber;
   });
 
-  const availableHistoricos = Array.from(historicoSet).sort((a, b) => a.localeCompare(b));
+  const availableHistoricos = Array.from(new Set([...KNOWN_PIX_HISTORICOS, ...historicoSet])).sort((a, b) => a.localeCompare(b));
 
   // Determine initial selected historicos
   // Pre-select 'CRED PIX CHAVE' and 'PIX RECEBIDO DADOS CONTA' (case/accent tolerant)

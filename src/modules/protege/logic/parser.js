@@ -126,6 +126,18 @@ export function processarLinhasBrutas(rows) {
   }
 
   const headerRow = rows[0].map(c => String(c || '').trim());
+  const normalizedHeaders = headerRow.map(normalizarTexto);
+  const hasProtegeHeaders = normalizedHeaders.includes('cnpj') && normalizedHeaders.includes('data') &&
+    normalizedHeaders.some(value => value.includes('transa')) && normalizedHeaders.includes('evento');
+  const hasPixHeaders = normalizedHeaders.some(value => value.includes('historico')) &&
+    normalizedHeaders.some(value => value.includes('documento') || value === 'doc') &&
+    normalizedHeaders.some(value => value.includes('valor'));
+  if (hasPixHeaders && !hasProtegeHeaders) {
+    return { success: false, error: 'Esta planilha pertence ao módulo Pix. Importe-a em Pix.', identifiedLotericas: [], unknownCNPJs: [], validRecordsCount: 0, ignoredRowsCount: rows.length, recordsByLoterica: {}, records: [] };
+  }
+  if (!hasProtegeHeaders) {
+    return { success: false, error: 'Planilha inválida ou desconhecida. Selecione uma planilha Protege.', identifiedLotericas: [], unknownCNPJs: [], validRecordsCount: 0, ignoredRowsCount: rows.length, recordsByLoterica: {}, records: [] };
+  }
   const col = mapearColunas(headerRow);
 
   const records = [];
@@ -296,6 +308,19 @@ export function processarLinhasBrutas(rows) {
       identifiedLotericas.push(CNPJ_TO_LOTERICA[c]);
     }
   });
+
+  if (records.length === 0) {
+    return {
+      success: false,
+      error: 'A planilha Protege não contém lançamentos válidos.',
+      identifiedLotericas: [],
+      unknownCNPJs: [],
+      validRecordsCount: 0,
+      ignoredRowsCount,
+      recordsByLoterica: {},
+      records: []
+    };
+  }
 
   return {
     success: true,

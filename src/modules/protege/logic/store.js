@@ -13,6 +13,7 @@ export class ProtegeStore {
     this.filtroUsuario = null; // null ou string exata do usuário ('2', '5', etc.)
     this.filtroUsuarioTexto = ''; // busca digitada
     this.filtroData = null; // null ou string da data ('01/10', '01/10/2026')
+    this.filtroMes = null; // YYYY-MM; isolates calendar days by full period
     this.filtroEvento = 'all'; // 'all', 'Depósito', 'Coleta'
     this.filtroImportacaoId = null;
     this.historicoImportacoes = [];
@@ -486,6 +487,8 @@ export class ProtegeStore {
     const records = this.getRecordsForActiveLoterica().filter(record => this.isInActiveImport(record));
     for (const record of records) {
       if (this.filtroUsuario !== null && record.usuario !== this.filtroUsuario) continue;
+      const iso = record.dataIso || '';
+      if (this.filtroMes && iso && iso.slice(0, 7) !== this.filtroMes) continue;
       const dStr = String(record.dataOnly || record.diaMes || record.data || '').split('/')[0];
       const dayNum = parseInt(dStr, 10);
       if (!Number.isNaN(dayNum) && dayNum >= 1 && dayNum <= 31) {
@@ -493,6 +496,21 @@ export class ProtegeStore {
       }
     }
     return Array.from(days).sort((a, b) => a - b);
+  }
+
+  getAvailableMonths() {
+    const months = new Set();
+    for (const record of this.getRecordsForActiveLoterica().filter(item => this.isInActiveImport(item))) {
+      const iso = record.dataIso || '';
+      if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) months.add(iso.slice(0, 7));
+    }
+    return Array.from(months).sort();
+  }
+
+  setFiltroMes(month) {
+    this.filtroMes = month || null;
+    this.filtroData = null;
+    this.notify();
   }
 
   /**
@@ -511,6 +529,8 @@ export class ProtegeStore {
       if (!this.isInActiveImport(record)) {
         continue;
       }
+
+      if (this.filtroMes && record.dataIso && record.dataIso.slice(0, 7) !== this.filtroMes) continue;
 
       // 2. Filtro de Usuário via Badge (Identificação EXATA obrigatória: '5' !== '15')
       if (this.filtroUsuario !== null) {

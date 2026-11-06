@@ -5,15 +5,15 @@ import { parseStatement } from './services/statementParser';
 import { formatValuesForClipboard } from './services/clipboard';
 
 describe('End-to-End Statement Processing on real Caixa Statement', () => {
-  it('processes original-caixa.xlsx through the full business pipeline', async () => {
-    const filePath = path.resolve(__dirname, '../fixtures/original-caixa.xlsx');
+  it('processes original-caixa.xls through the full business pipeline', async () => {
+    const filePath = path.resolve(__dirname, '../fixtures/original-caixa.xls');
     const buf = fs.readFileSync(filePath);
     const buffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 
     // 1. Process statement
-    const parsed = await parseStatement(buffer, 'original-caixa.xlsx');
+    const parsed = await parseStatement(buffer, 'original-caixa.xls');
     expect(parsed.errors).toHaveLength(0);
-    expect(parsed.totalValidTransactions).toBe(1901);
+    expect(parsed.totalValidTransactions).toBe(410);
     expect(parsed.pixTransactions.length).toBeGreaterThan(0);
 
     // 2. Default habitual filters

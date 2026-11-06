@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { Header, type MainNavSection } from './components/Header';
+import { ToastNotification } from '../../../app/components/SharedMenus';
 import { FileDropzone } from './components/FileDropzone';
 import { CompactFilterSummary } from './components/CompactFilterSummary';
 import { ConferenceList, type ConferenceBehavior } from './components/ConferenceList';
@@ -246,8 +247,6 @@ export function App({ workspaceId = 'standalone', isActive = true }: PixAppProps
         const result = await parseStatement(buffer, fileName);
         if (result.errors && result.errors.length > 0) {
           setErrors(result.errors);
-          setParseResult(null);
-          setActiveConferenceId(null);
           return;
         }
 
@@ -444,6 +443,7 @@ export function App({ workspaceId = 'standalone', isActive = true }: PixAppProps
 
   return (
     <div id={`pix-instance-${workspaceId}`} data-module-ready="pix" className="h-full w-full overflow-hidden bg-white text-slate-900 flex flex-col font-sans select-none">
+      {parseResult && errors.length > 0 && <ToastNotification toast={{ tone: errors[0].includes('Planilha Protege') ? 'warning' : 'danger', text: errors[0].includes('Planilha Protege') ? 'Esta planilha pertence ao módulo Protege. Importe-a em Protege.' : `Não foi possível processar a planilha: ${errors[0]}`, onClose: () => setErrors([]) }} onDismiss={() => setErrors([])} />}
       <Header
         currentSection={currentSection}
         onNavigate={setCurrentSection}
@@ -468,7 +468,22 @@ export function App({ workspaceId = 'standalone', isActive = true }: PixAppProps
         onChange={handleFallbackFileChange}
       />
 
-      <main className="flex-1 min-h-0 w-full overflow-hidden flex flex-col px-3 sm:px-5 py-3">
+      <main className="flex-1 min-h-0 w-full overflow-hidden flex flex-col px-3 sm:px-5 py-2">
+        <div className="pix-toolbar-filter-slot">
+          {currentSection === 'conferencia' && parseResult ? (
+            <CompactFilterSummary
+              selectedDia={selectedDia}
+              onSelectDia={setSelectedDia}
+              availableDias={availableDias}
+              selectedHistoricos={selectedHistoricos}
+              onToggleHistorico={toggleHistorico}
+              onSelectAllHistoricos={selectAllHistoricos}
+              onClearAllHistoricos={clearAllHistoricos}
+              availableHistoricos={availableHistoricos}
+              initialSelectedHistoricos={parseResult.initialSelectedHistoricos}
+            />
+          ) : null}
+        </div>
         {/* SECTION: CONFERÊNCIA */}
         {currentSection === 'conferencia' && (
           <div className="flex-1 min-h-0 flex flex-col">
@@ -481,23 +496,7 @@ export function App({ workspaceId = 'standalone', isActive = true }: PixAppProps
                 />
               </div>
             ) : (
-              <div className="flex-1 min-h-0 flex flex-col gap-2.5">
-                {/* Expandable Top Filter Area with Day Badges and History Filters */}
-                <div className="shrink-0">
-                  <CompactFilterSummary
-                    stats={stats}
-                    selectedDia={selectedDia}
-                    onSelectDia={setSelectedDia}
-                    availableDias={availableDias}
-                    selectedHistoricos={selectedHistoricos}
-                    onToggleHistorico={toggleHistorico}
-                    onSelectAllHistoricos={selectAllHistoricos}
-                    onClearAllHistoricos={clearAllHistoricos}
-                    availableHistoricos={availableHistoricos}
-                    initialSelectedHistoricos={parseResult.initialSelectedHistoricos}
-                  />
-                </div>
-
+              <div className="flex-1 min-h-0 flex flex-col">
                 {/* Main Desktop Grid: Main List (7 cols) + Only Pendentes (5 cols) with independent internal scrollbars */}
                 <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-stretch">
                   {/* Left: Lista de PIX */}

@@ -1,127 +1,64 @@
 import { describe, it, expect, vi } from 'vitest';
 import '@testing-library/jest-dom/vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { CompactFilterSummary } from './CompactFilterSummary';
-import type { ConferenceStats } from '../hooks/useConference';
 
-const mockStats: ConferenceStats = {
-  totalCount: 100,
-  conferidosCount: 40,
-  pendentesCount: 60,
-  percentCompleted: 40,
-  totalCentavos: 100000,
-  conferidosCentavos: 40000,
-  pendentesCentavos: 60000,
-  totalValor: 1000.0,
-  conferidosValor: 400.0,
-  pendentesValor: 600.0,
-};
+const historicos = ['CRED PIX CHAVE', 'CRED PIX QR COD DIN', 'PIX MANUAL DE DADOS'];
 
-describe('CompactFilterSummary Component', () => {
-  it('renders indicators correctly and starts with the filter panel collapsed', () => {
-    render(
-      <CompactFilterSummary
-        stats={mockStats}
-        selectedDia="TODOS"
-        onSelectDia={vi.fn()}
-        availableDias={['DIA 01', 'DIA 02', 'DIA 03']}
-        selectedHistoricos={new Set(['CRED PIX CHAVE', 'PIX RECEBIDO DADOS CONTA'])}
-        onToggleHistorico={vi.fn()}
-        onSelectAllHistoricos={vi.fn()}
-        onClearAllHistoricos={vi.fn()}
-        availableHistoricos={['CRED PIX CHAVE', 'PIX RECEBIDO DADOS CONTA']}
-        initialSelectedHistoricos={['CRED PIX CHAVE']}
-      />
-    );
+function renderFilters(overrides: Record<string, unknown> = {}) {
+  const props = {
+    selectedDia: 'TODOS',
+    onSelectDia: vi.fn(),
+    availableDias: ['DIA 01', 'DIA 02', 'DIA 28'],
+    selectedHistoricos: new Set(['CRED PIX CHAVE', 'PIX MANUAL DE DADOS']),
+    onToggleHistorico: vi.fn(),
+    onSelectAllHistoricos: vi.fn(),
+    onClearAllHistoricos: vi.fn(),
+    availableHistoricos: historicos,
+    initialSelectedHistoricos: ['CRED PIX CHAVE', 'PIX MANUAL DE DADOS'],
+    ...overrides,
+  };
+  return { ...render(<CompactFilterSummary {...props as any} />), props };
+}
 
-    // Indicators visible
-    expect(screen.getByText('Todos os dias')).toBeInTheDocument();
-    expect(screen.getByText('100 lançamentos')).toBeInTheDocument();
-    expect(screen.getByText('40 conferidos')).toBeInTheDocument();
-    expect(screen.getByText('60 pendentes')).toBeInTheDocument();
-
-    // Expandable content should NOT be in the document initially
-    expect(screen.queryByText('Filtrar por Dia')).not.toBeInTheDocument();
-    expect(screen.queryByText('Históricos de PIX')).not.toBeInTheDocument();
+describe('CompactFilterSummary dropdown filters', () => {
+  it('renders the day selector, history selector, and removable selected tags in one row', () => {
+    renderFilters();
+    expect(screen.getByRole('button', { name: 'Todos os dias' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Históricos de Pix' })).toBeInTheDocument();
+    expect(screen.queryByText(/lançamentos exibidos/)).not.toBeInTheDocument();
+    expect(document.querySelector('.pix-compact-filter-summary')).toBeInTheDocument();
+    expect(document.querySelector('.pix-compact-filter-summary')?.classList.contains('rounded-2xl')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Remover CRED PIX CHAVE' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('expands on chevron button click and displays day badges and history pills', () => {
-    const handleSelectDia = vi.fn();
-    const handleToggleHistorico = vi.fn();
-    const handleSelectAllHist = vi.fn();
-    const handleClearAllHist = vi.fn();
-
-    render(
-      <CompactFilterSummary
-        stats={mockStats}
-        selectedDia="TODOS"
-        onSelectDia={handleSelectDia}
-        availableDias={['DIA 01', 'DIA 02', 'DIA 03']}
-        selectedHistoricos={new Set(['CRED PIX CHAVE'])}
-        onToggleHistorico={handleToggleHistorico}
-        onSelectAllHistoricos={handleSelectAllHist}
-        onClearAllHistoricos={handleClearAllHist}
-        availableHistoricos={['CRED PIX CHAVE', 'PIX RECEBIDO DADOS CONTA']}
-        initialSelectedHistoricos={['CRED PIX CHAVE']}
-      />
-    );
-
-    // Click toggle button to expand
-    const toggleBtn = screen.getByRole('button', { name: /expandir filtros/i });
-    fireEvent.click(toggleBtn);
-
-    // Now day and history sections are visible
-    expect(screen.getByText('Filtrar por Dia')).toBeInTheDocument();
-    expect(screen.getByText('Históricos de PIX')).toBeInTheDocument();
-
-    // Verify day badges
-    expect(screen.getByRole('button', { name: 'DIA 01' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'DIA 02' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'DIA 03' })).toBeInTheDocument();
-
-    // Click DIA 02
-    fireEvent.click(screen.getByRole('button', { name: 'DIA 02' }));
-    expect(handleSelectDia).toHaveBeenCalledWith('DIA 02');
-
-    // Click history pill
-    fireEvent.click(screen.getByText('PIX RECEBIDO DADOS CONTA'));
-    expect(handleToggleHistorico).toHaveBeenCalledWith('PIX RECEBIDO DADOS CONTA');
-
-    // Quick history action buttons
-    fireEvent.click(screen.getByText('Marcar todos'));
-    expect(handleSelectAllHist).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByText('Desmarcar todos'));
-    expect(handleClearAllHist).toHaveBeenCalledTimes(1);
-
-    // Clicking toggle button again collapses the panel
-    const collapseBtn = screen.getByRole('button', { name: /recolher filtros/i });
-    fireEvent.click(collapseBtn);
-    expect(screen.queryByText('Filtrar por Dia')).not.toBeInTheDocument();
+  it('opens the checkbox dropdown with dynamic options and select-all actions', () => {
+    const { props } = renderFilters();
+    fireEvent.click(screen.getByRole('button', { name: 'Históricos de Pix' }));
+    const menu = screen.getByRole('dialog', { name: 'Históricos de Pix' });
+    expect(within(menu).getByRole('checkbox', { name: /CRED PIX CHAVE/ })).toBeChecked();
+    expect(within(menu).getByRole('checkbox', { name: /CRED PIX QR COD DIN/ })).not.toBeChecked();
+    fireEvent.click(within(menu).getByRole('checkbox', { name: /CRED PIX QR COD DIN/ }));
+    expect(props.onToggleHistorico).toHaveBeenCalledWith('CRED PIX QR COD DIN');
+    fireEvent.click(within(menu).getByRole('button', { name: 'Marcar todos' }));
+    fireEvent.click(within(menu).getByRole('button', { name: 'Desmarcar todos' }));
+    expect(props.onSelectAllHistoricos).toHaveBeenCalledOnce();
+    expect(props.onClearAllHistoricos).toHaveBeenCalledOnce();
   });
 
-  it('highlights selected day badge correctly', () => {
-    render(
-      <CompactFilterSummary
-        stats={mockStats}
-        selectedDia="DIA 02"
-        onSelectDia={vi.fn()}
-        availableDias={['DIA 01', 'DIA 02']}
-        selectedHistoricos={new Set(['CRED PIX CHAVE'])}
-        onToggleHistorico={vi.fn()}
-        onSelectAllHistoricos={vi.fn()}
-        onClearAllHistoricos={vi.fn()}
-        availableHistoricos={['CRED PIX CHAVE']}
-      />
-    );
-
-    // Open panel
-    fireEvent.click(screen.getByRole('button', { name: /expandir filtros/i }));
-
-    const dia2Btns = screen.getAllByRole('button', { name: 'DIA 02' });
-    // The badge in the expandable panel is highlighted
-    const badgeInPanel = dia2Btns[dia2Btns.length - 1];
-    expect(badgeInPanel.className).toContain('bg-rose-900');
-    expect(badgeInPanel.className).toContain('text-white');
+  it('opens the calendar under the day selector and never keeps the history menu open with it', () => {
+    const { props } = renderFilters();
+    fireEvent.click(screen.getByRole('button', { name: 'Históricos de Pix' }));
+    expect(screen.getByRole('dialog', { name: 'Históricos de Pix' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Todos os dias' }));
+    expect(screen.queryByRole('dialog', { name: 'Históricos de Pix' })).not.toBeInTheDocument();
+    const calendar = screen.getByRole('dialog', { name: 'Selecionar dia' });
+    expect(within(calendar).getByRole('button', { name: '02' })).toHaveClass('has-data');
+    fireEvent.click(within(calendar).getByRole('button', { name: '02' }));
+    expect(props.onSelectDia).toHaveBeenCalledWith('DIA 02');
+    fireEvent.click(screen.getByRole('button', { name: 'Históricos de Pix' }));
+    expect(screen.queryByRole('dialog', { name: 'Selecionar dia' })).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Históricos de Pix' })).toBeInTheDocument();
   });
 });
